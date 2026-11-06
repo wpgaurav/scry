@@ -1,0 +1,61 @@
+{
+  "name": "scry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Google Search Console dashboard, REST API and MCP server on Cloudflare Workers.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "node scripts/vendor.mjs",
+    "deploy": "node scripts/vendor.mjs && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "key:create": "node scripts/create-key.mjs",
+    "icons": "node scripts/build-icons.mjs",
+    "migrations": "node scripts/build-migrations.mjs",
+    "postinstall": "node scripts/vendor.mjs"
+  },
+  "dependencies": {
+    "@tabler/core": "^1.7.1",
+    "apexcharts": "^7.0.0",
+    "hono": "^4.13.16",
+    "jose": "^6.2.15"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "@cloudflare/workers-types": "^5.20261106.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.158.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wpgaurav/scry"
+  },
+  "keywords": [
+    "google-search-console",
+    "seo",
+    "cloudflare-workers",
+    "mcp",
+    "d1",
+    "dashboard"
+  ],
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_PASSWORD": {
+        "description": "Password for the dashboard, 12+ characters. You can switch to Cloudflare Access later."
+      },
+      "SA_ENCRYPTION_KEY": {
+        "description": "Any long random string (for example from `openssl rand -base64 48`). It encrypts the Google service account keys you upload. Keep it: changing it means re-uploading keys."
+      },
+      "DB": {
+        "description": "Stores 16 months of Search Console data."
+      },
+      "KV": {
+        "description": "Caches reports and Google access tokens."
+      }
+    }
+  }
+}

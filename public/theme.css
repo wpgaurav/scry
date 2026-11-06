@@ -1,0 +1,105 @@
+/*
+ * Theme layer on top of Tabler. Swap this file to reskin the dashboard.
+ * Default: GT accent (brick red / coral) as primary, warm neutrals,
+ * every text colour at 7:1 or better, and no text below 0.9rem.
+ */
+:root,
+[data-bs-theme="light"] {
+  --gt-accent: #c0392b;
+  --gt-accent-ink: #8f281c;
+  --gt-series-2: #1f3b63;
+  --gt-good: #1a5530;
+  --gt-bad: #8f281c;
+  --gt-muted: #4a4640;
+  --gt-ink: #1a1816;
+  --gt-bg: #fbfaf7;
+  --gt-line: #e2ddd4;
+
+  --tblr-primary: #8f281c;
+  --tblr-primary-rgb: 143, 40, 28;
+  --tblr-primary-fg: #ffffff;
+  --tblr-primary-darken: #7a2218;
+  --tblr-primary-lt: #f6e9e6;
+  --tblr-link-color: #8f281c;
+  --tblr-link-color-rgb: 143, 40, 28;
+  --tblr-link-hover-color: #7a2218;
+  --tblr-body-color: var(--gt-ink);
+  --tblr-body-bg: var(--gt-bg);
+  --tblr-bg-surface: #ffffff;
+  --tblr-bg-surface-secondary: #f3f0ea;
+  --tblr-border-color: var(--gt-line);
+  --tblr-border-color-translucent: rgba(60, 45, 30, 0.12);
+  --tblr-secondary: var(--gt-muted);
+  --tblr-secondary-color: var(--gt-muted);
+  --tblr-body-font-size: 0.9375rem;
+  --tblr-font-size-h1: 1.75rem;
+  --tblr-border-radius: 4px;
+}
+
+[data-bs-theme="dark"] {
+  --gt-accent: #da6f55;
+  --gt-accent-ink: #f0a08c;
+  --gt-series-2: #a9c3ea;
+  --gt-good: #8fd1a3;
+  --gt-bad: #f0a08c;
+  --gt-muted: #c4bdb2;
+  --gt-ink: #f2efe9;
+  --gt-bg: #141312;
+  --gt-line: #34312c;
+
+  --tblr-primary: #f0a08c;
+  --tblr-primary-rgb: 240, 160, 140;
+  --tblr-primary-fg: #141312;
+  --tblr-primary-darken: #e88a73;
+  --tblr-primary-lt: #3a2420;
+  --tblr-link-color: #f0a08c;
+  --tblr-link-color-rgb: 240, 160, 140;
+  --tblr-link-hover-color: #f6bcad;
+  --tblr-body-color: var(--gt-ink);
+  --tblr-body-bg: var(--gt-bg);
+  --tblr-bg-surface: #1c1b19;
+  --tblr-bg-surface-secondary: #25231f;
+  --tblr-bg-surface-dark: #141312;
+  --tblr-border-color: var(--gt-line);
+  --tblr-border-color-translucent: rgba(255, 245, 230, 0.1);
+  --tblr-secondary: var(--gt-muted);
+  --tblr-secondary-color: var(--gt-muted);
+}
+
+body { font-size: var(--tblr-body-font-size); }
+
+/* Text floor: nothing under 0.9rem, and muted text stays at 7:1. */
+small, .small, .subheader, .form-hint, .datagrid-title, .badge, .table thead th, .page-pretitle, .text-secondary, .dropdown-item, .nav-link, .form-label {
+  font-size: max(0.9rem, 1em);
+}
+.text-secondary, .text-muted, .subheader, .form-hint, .datagrid-title, .table thead th, .empty-subtitle { color: var(--gt-muted) !important; }
+.table thead th { text-transform: none; letter-spacing: normal; font-weight: 600; background: var(--tblr-bg-surface-secondary); }
+.subheader { text-transform: none; letter-spacing: normal; font-weight: 600; }
+
+.btn { border-radius: 4px; --tblr-btn-font-size: 0.9375rem; font-size: 0.9375rem; }
+.btn-sm { --tblr-btn-font-size: 0.9rem; font-size: 0.9rem; }
+.page-link { font-size: 0.9375rem; }
+.btn-primary { --tblr-btn-bg: var(--tblr-primary); --tblr-btn-border-color: var(--tblr-primary); --tblr-btn-hover-bg: var(--tblr-primary-darken); --tblr-btn-hover-border-color: var(--tblr-primary-darken); --tblr-btn-color: var(--tblr-primary-fg); --tblr-btn-hover-color: var(--tblr-primary-fg); --tblr-btn-active-bg: var(--tblr-primary-darken); }
+.form-select:focus, .form-control:focus { border-color: var(--gt-accent); box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--gt-accent) 20%, transparent); }
+
+.brand-mark { font-weight: 800; font-size: 1.25rem; color: var(--gt-ink); text-decoration: none; display: inline-flex; gap: 8px; align-items: center; }
+.brand-mark::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--gt-accent); }
+.navbar-vertical .nav-link.active, .navbar-vertical .nav-item.active > .nav-link { color: var(--gt-ink); font-weight: 600; background: var(--tblr-bg-surface-secondary); border-radius: 4px; }
+
+.t-good { color: var(--gt-good) !important; }
+.t-bad { color: var(--gt-bad) !important; }
+.badge-soft-good { background: color-mix(in srgb, var(--gt-good) 14%, transparent); color: var(--gt-good); }
+.badge-soft-bad { background: color-mix(in srgb, var(--gt-bad) 14%, transparent); color: var(--gt-bad); }
+.badge-soft { background: var(--tblr-bg-surface-secondary); color: var(--gt-ink); }
+.progress-bar { background-color: var(--gt-accent); }
+
+.url { word-break: break-all; }
+.cell-label { min-width: 180px; max-width: 520px; }
+.num { font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
+.kpi-value { font-size: 1.75rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.chart-box { min-height: 300px; }
+pre.code { background: var(--tblr-bg-surface-secondary); color: var(--gt-ink); padding: 12px 14px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.9rem; margin: 0; }
+.filters .form-select, .filters .form-control { min-width: 120px; }
+.apexcharts-tooltip, .apexcharts-legend-text, .apexcharts-text { font-size: 0.9rem !important; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

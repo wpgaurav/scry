@@ -1,0 +1,5 @@
+# Secrets. The Deploy to Cloudflare button asks for these; for local dev copy this file to .dev.vars.
+# Dashboard password, 12 characters or more.
+ADMIN_PASSWORD=
+# Any long random string, e.g. `openssl rand -base64 48`. Encrypts service account keys at rest.
+SA_ENCRYPTION_KEY=

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in</title>
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('theme'); } catch (e) {}
+      if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-bs-theme', t);
+    })();
+  </script>
+  <link rel="stylesheet" href="/vendor/tabler.min.css">
+  <link rel="stylesheet" href="/theme.css">
+</head>
+<body class="d-flex flex-column">
+  <div class="page page-center">
+    <div class="container container-tight py-4">
+      <div class="text-center mb-4"><span class="brand-mark">Sign in</span></div>
+      <div class="card card-md">
+        <div class="card-body">
+          <h1 class="h2 text-center mb-4">Open your dashboard</h1>
+          <form id="f" autocomplete="on" novalidate>
+            <input type="text" name="username" value="admin" autocomplete="username" hidden>
+            <div class="mb-3">
+              <label class="form-label" for="pw">Password</label>
+              <input class="form-control" id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
+            </div>
+            <div id="msg" role="alert" class="mb-3" hidden></div>
+            <button class="btn btn-primary w-100" type="submit">Sign in</button>
+          </form>
+        </div>
+      </div>
+      <p class="text-center text-secondary mt-3">This is the ADMIN_PASSWORD secret set on the Worker.</p>
+    </div>
+  </div>
+  <script>
+    document.getElementById('f').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var msg = document.getElementById('msg');
+      var btn = e.currentTarget.querySelector('button');
+      btn.disabled = true;
+      try {
+        var res = await fetch('/auth/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: document.getElementById('pw').value }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.error || 'Sign-in failed');
+        location.replace('/');
+      } catch (err) {
+        msg.hidden = false;
+        msg.className = 'alert alert-danger mb-3';
+        msg.textContent = err.message;
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

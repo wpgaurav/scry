@@ -1,0 +1,54 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "scry",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Every request runs through the Worker first, so sign-in is checked before any file is served.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+
+  // No IDs on purpose: `wrangler deploy` and the Deploy to Cloudflare button create
+  // these resources in your account on the first deploy.
+  "d1_databases": [{ "binding": "DB", "database_name": "scry" }],
+  "kv_namespaces": [{ "binding": "KV" }],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "scry-jobs" }],
+    "consumers": [{ "queue": "scry-jobs", "max_batch_size": 1, "max_concurrency": 2, "max_retries": 5 }]
+  },
+
+  // Every 6 hours: sync. 05:30 UTC: URL inspection + sitemaps. Monday 07:00 UTC: weekly digest.
+  "triggers": { "crons": ["0 */6 * * *", "30 5 * * *", "0 7 * * 1"] },
+
+  "observability": { "enabled": true },
+
+  "vars": {
+    "APP_NAME": "Scry",
+    // Leave empty. "none" disables sign-in and only works on localhost.
+    "AUTH_MODE": "",
+    // Optional Cloudflare Access instead of (or alongside) the password, e.g. https://yourteam.cloudflareaccess.com
+    "ACCESS_TEAM_DOMAIN": "",
+    // Optional comma-separated allow list for Access sign-ins.
+    "ALLOWED_EMAILS": "",
+    // Optional weekly digest. Any API that takes {from,to,subject,html} JSON with a Bearer key:
+    // Emailit (https://api.emailit.com/v2/emails) or Resend (https://api.resend.com/emails).
+    "EMAIL_API_URL": "",
+    "DIGEST_TO": "",
+    "DIGEST_FROM": ""
+  }
+
+  // Secrets (Settings → Variables and Secrets, or `npx wrangler secret put NAME`):
+  //   ADMIN_PASSWORD     Dashboard password, 12+ characters
+  //   SA_ENCRYPTION_KEY  Long random string that encrypts uploaded service account keys
+  //   ACCESS_AUD         Optional, Cloudflare Access application audience tag
+  //   EMAIL_API_KEY      Optional, email provider key for the digest
+  //   GSC_SA_KEY         Optional, a service account JSON key (instead of uploading in Settings)
+
+  // Custom domain (optional): uncomment and set your hostname.
+  // "routes": [{ "pattern": "scry.example.com", "custom_domain": true }]
+}
