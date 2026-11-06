@@ -6,6 +6,7 @@ import { HttpError, type Env, type Session } from './env';
 import { GoogleError } from './google';
 import { callTool, TOOLS, toolJsonSchema } from './tools';
 import { isOverloaded } from './db';
+import { getBranding } from './branding';
 
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_VERSION = '0.1.0';
@@ -38,7 +39,7 @@ async function handleOne(env: Env, session: Session, msg: RpcRequest) {
       return ok(msg.id, {
         protocolVersion: SUPPORTED_VERSIONS.includes(requested) ? requested : SUPPORTED_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: env.APP_NAME || 'scry', title: `${env.APP_NAME || 'Scry'} Search Console`, version: SERVER_VERSION },
+        serverInfo: { name: (await getBranding(env)).name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'scry', title: `${(await getBranding(env)).name} Search Console`, version: SERVER_VERSION },
         instructions: INSTRUCTIONS,
       });
     }

@@ -30,6 +30,7 @@ Scry is one Cloudflare Worker that copies your Search Console data into D1 every
 - **Keyword groups.** Rank tracking from your own Search Console data, with exact or contains matching and no keyword limit.
 - **AI access.** An MCP server at `/mcp`, a REST API at `/api` and an OpenAPI 3.1 spec at `/api/openapi.json`. All three come from one tool registry.
 - **Multiple Google accounts.** Upload as many service account keys as you need. They're stored encrypted, and each property uses the account that can read it.
+- **White-label branding.** Your own name, logo, dark-mode logo, favicon, accent colour and login message. Text colours adjust themselves to keep 7:1 contrast in both themes.
 - **Weekly digest** by email, plus a **WordPress plugin** that adds Search Console numbers to your posts list and editor.
 
 ## Deploy
@@ -94,6 +95,17 @@ Access gives you Google or one-time PIN sign-in with an email allow list.
 3. Set the `ACCESS_TEAM_DOMAIN` variable (`https://yourteam.cloudflareaccess.com`) and the `ACCESS_AUD` secret (the application's audience tag). You can also limit sign-ins with `ALLOWED_EMAILS`.
 
 Access and the password can run side by side. Remove `ADMIN_PASSWORD` to switch to Access only.
+
+### Branding
+
+Go to **Settings → Branding** to set:
+
+- **Name:** shown in the sidebar, browser tab, emails and MCP clients.
+- **Logo:** plus an optional dark-mode version and a favicon. PNG, SVG, WebP or JPEG up to 512 KB, with ICO also accepted for the favicon. Turn off "Show the name next to the logo" if the name is already in the logo.
+- **Accent colour:** pick any colour. Scry derives the text, button and link shades, darkening or lightening them until they clear 7:1 contrast on every surface in light and dark mode. Error and decline colours stay red, whatever the brand colour.
+- **Login page message:** for example, "Search reporting for the Acme team."
+
+Files are checked by their actual bytes, not their extension. SVGs with scripts, event handlers or external links are rejected, and every logo is served with a sandboxing content security policy. Images live in KV, and the text settings live in D1.
 
 ### Custom domain
 
@@ -226,6 +238,10 @@ npm test
 ```
 
 New tools go in `src/tools.ts`. That one registry feeds the REST API, the MCP server and the OpenAPI spec. Schema changes go in a new numbered file in `migrations/`, followed by `npm run migrations`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Roadmap
+
+Alerts, chart annotations and content groups are next, followed by client portals with share links and scheduled PDF reports, anomaly detection and MCP over OAuth. See [ROADMAP.md](ROADMAP.md) and tell us what you'd use.
 
 ## License
 

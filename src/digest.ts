@@ -2,6 +2,7 @@ import type { Env, Property } from './env';
 import { listProperties } from './db';
 import { insight } from './insights';
 import { summary } from './reports';
+import { getBranding } from './branding';
 
 const esc = (s: unknown) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -50,11 +51,13 @@ export async function buildDigest(env: Env, origin = '') {
       parts.push(`<h2>${esc(p.label)}</h2><p>Could not build this section: ${esc((e as Error).message)}</p>`);
     }
   }
-  const name = env.APP_NAME || 'Scry';
+  const brand = await getBranding(env);
+  const name = brand.name;
+  const logo = origin && brand.assets['logo-light'] ? `<img src="${esc(origin)}/brand/logo-light?v=${esc(brand.version)}" alt="${esc(name)}" style="max-height:40px;max-width:200px;display:block;margin:0 0 12px">` : '';
   return {
     subject: `${name} weekly: Search Console digest`,
     html: `<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:#1a1a1a;max-width:640px;margin:0 auto;padding:24px">
-    <h1 style="font-size:22px;margin:0 0 4px">${esc(name)} weekly digest</h1>
+    ${logo}<h1 style="font-size:22px;margin:0 0 4px">${esc(name)} weekly digest</h1>
     <p style="margin:0;color:#555">Last 7 days of final data vs the 7 days before.</p>
     ${parts.join('')}
     ${origin ? `<p style="margin-top:28px"><a href="${esc(origin)}" style="color:#9a1f17">Open the dashboard</a></p>` : ''}

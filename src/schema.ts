@@ -32,5 +32,11 @@ export const MIGRATIONS: { name: string; statements: string[] }[] = [
       "CREATE TABLE service_accounts (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  client_email TEXT NOT NULL UNIQUE,\n  project_id TEXT,\n  private_key_id TEXT,\n  key_ciphertext TEXT NOT NULL,\n  key_iv TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  last_ok_at TEXT,\n  last_error TEXT\n)",
       "ALTER TABLE properties ADD COLUMN service_account_id INTEGER REFERENCES service_accounts(id)"
     ]
+  },
+  {
+    "name": "0003_settings.sql",
+    "statements": [
+      "CREATE TABLE settings (\n  key TEXT PRIMARY KEY,\n  value TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n)"
+    ]
   }
 ];

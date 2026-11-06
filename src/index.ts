@@ -11,6 +11,7 @@ import {
   revokeApiKey,
 } from './auth';
 import { ensureSchema } from './migrate';
+import { assetResponse, brandCss, deleteAsset, getBranding, isAsset, MAX_ASSET_BYTES, resetBranding, saveAsset, saveBranding } from './branding';
 import { HttpError, type Env, type Job, type Session } from './env';
 import { accessToken, GoogleError, listSites } from './google';
 import { encryptKey, forgetSiteAccounts, parseKeyFile, secretCredential } from './accounts';
@@ -60,7 +61,7 @@ app.options('*', (c) => (isApi(c.req.path) ? new Response(null, { status: 204, h
 
 // Public, data-free endpoints.
 app.get('/healthz', (c) => c.json({ ok: true }));
-app.get('/api/openapi.json', (c) => c.json(openapi(new URL(c.req.url).origin, c.env.APP_NAME)));
+app.get('/api/openapi.json', async (c) => c.json(openapi(new URL(c.req.url).origin, (await getBranding(c.env)).name)));
 
 // Password sign-in (when ADMIN_PASSWORD is set). The login page and its stylesheet
 // hold no data, so they are the only files served before authentication.
@@ -79,6 +80,18 @@ app.post('/auth/login', async (c) => {
 
 app.post('/auth/logout', (c) => c.json({ ok: true }, 200, { 'set-cookie': clearSessionCookie(new URL(c.req.url).protocol === 'https:') }));
 
+// Branding is public (the login page needs it) and holds no Search Console data.
+app.get('/brand.css', async (c) => c.body(await brandCss(c.env), 200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, max-age=60' }));
+app.get('/brand.json', async (c) => {
+  const b = await getBranding(c.env);
+  return c.json({ name: b.name, login_message: b.login_message, show_name: b.show_name, version: b.version, logo_light: Boolean(b.assets['logo-light']), logo_dark: Boolean(b.assets['logo-dark']) }, 200, { 'cache-control': 'public, max-age=60' });
+});
+app.get('/brand/:asset', async (c) => {
+  const asset = c.req.param('asset');
+  if (!isAsset(asset)) return c.text('Not found', 404);
+  return assetResponse(c.env, asset);
+});
+
 // Everything else is authenticated, including static files.
 app.use('*', async (c, next) => {
   try {
@@ -95,9 +108,10 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-app.get('/api/me', (c) => {
+app.get('/api/me', async (c) => {
   const s = c.get('session');
-  return c.json({ kind: s.kind, scope: s.scope, email: s.email ?? null, app: c.env.APP_NAME || 'Scry', password_session: s.email === 'admin' });
+  const b = await getBranding(c.env);
+  return c.json({ kind: s.kind, scope: s.scope, email: s.email ?? null, app: b.name, brand: b, password_session: s.email === 'admin' });
 });
 
 // API key management: signed-in humans only.
@@ -210,6 +224,36 @@ app.delete('/api/service-accounts/:id', async (c) => {
   await c.env.KV.delete(`google:token:${acct.client_email}`);
   forgetSiteAccounts();
   return c.json({ removed: acct.client_email, moved: moves });
+});
+
+// Branding settings: signed-in humans only.
+app.get('/api/branding', async (c) => {
+  requireHuman(c.get('session'));
+  return c.json(await getBranding(c.env));
+});
+app.post('/api/branding', async (c) => {
+  requireHuman(c.get('session'));
+  const body = await c.req.json<Record<string, unknown>>().catch(() => {
+    throw new HttpError(400, 'Body must be valid JSON');
+  });
+  return c.json(await saveBranding(c.env, body));
+});
+app.post('/api/branding/reset', async (c) => {
+  requireHuman(c.get('session'));
+  return c.json(await resetBranding(c.env));
+});
+app.put('/api/branding/:asset', async (c) => {
+  requireHuman(c.get('session'));
+  const asset = c.req.param('asset');
+  if (!isAsset(asset)) throw new HttpError(404, 'Unknown image slot');
+  if (Number(c.req.header('content-length') || 0) > MAX_ASSET_BYTES) throw new HttpError(413, 'Images must be 512 KB or smaller.');
+  return c.json(await saveAsset(c.env, asset, new Uint8Array(await c.req.arrayBuffer())));
+});
+app.delete('/api/branding/:asset', async (c) => {
+  requireHuman(c.get('session'));
+  const asset = c.req.param('asset');
+  if (!isAsset(asset)) throw new HttpError(404, 'Unknown image slot');
+  return c.json(await deleteAsset(c.env, asset));
 });
 
 app.get('/api/digest/preview', async (c) => {

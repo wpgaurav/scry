@@ -15,14 +15,17 @@
   </script>
   <link rel="stylesheet" href="/vendor/tabler.min.css">
   <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/brand.css">
+  <link rel="icon" href="/brand/favicon">
 </head>
 <body class="d-flex flex-column">
   <div class="page page-center">
     <div class="container container-tight py-4">
-      <div class="text-center mb-4"><span class="brand-mark">Sign in</span></div>
+      <div class="text-center mb-4"><a class="brand-mark justify-content-center" id="brand" href="/login"></a></div>
       <div class="card card-md">
         <div class="card-body">
-          <h1 class="h2 text-center mb-4">Open your dashboard</h1>
+          <h1 class="h2 text-center mb-2">Open your dashboard</h1>
+          <p class="text-secondary text-center mb-4" id="login-msg" hidden></p>
           <form id="f" autocomplete="on" novalidate>
             <input type="text" name="username" value="admin" autocomplete="username" hidden>
             <div class="mb-3">
@@ -34,10 +37,27 @@
           </form>
         </div>
       </div>
-      <p class="text-center text-secondary mt-3">This is the ADMIN_PASSWORD secret set on the Worker.</p>
+      <p class="text-center text-secondary mt-3" id="login-hint">Use the dashboard password (the ADMIN_PASSWORD secret on the Worker).</p>
     </div>
   </div>
   <script>
+    fetch('/brand.json').then(function (r) { return r.json(); }).then(function (b) {
+      document.title = 'Sign in · ' + b.name;
+      var el = document.getElementById('brand');
+      var v = encodeURIComponent(b.version);
+      var html = '';
+      if (b.logo_light) {
+        el.classList.add('has-logo');
+        html += '<img class="brand-logo brand-logo--light' + (b.logo_dark ? ' has-dark' : '') + '" src="/brand/logo-light?v=' + v + '" alt="">';
+        if (b.logo_dark) html += '<img class="brand-logo brand-logo--dark" src="/brand/logo-dark?v=' + v + '" alt="">';
+      }
+      if (!b.logo_light || b.show_name) html += '<span class="brand-name"></span>';
+      el.innerHTML = html;
+      var n = el.querySelector('.brand-name');
+      if (n) n.textContent = b.name;
+      el.setAttribute('aria-label', b.name);
+      if (b.login_message) { var m = document.getElementById('login-msg'); m.textContent = b.login_message; m.hidden = false; document.getElementById('login-hint').hidden = true; }
+    }).catch(function () {});
     document.getElementById('f').addEventListener('submit', async function (e) {
       e.preventDefault();
       var msg = document.getElementById('msg');

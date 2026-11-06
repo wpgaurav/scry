@@ -700,6 +700,40 @@ async function settingsView() {
     api('/gsc/sites').catch((e) => ({ error: e.message, sites: [], service_accounts: [] })),
     api('/service-accounts').catch(() => ({ accounts: [], encryption_configured: false })),
   ]);
+  const brand = await api('/branding').catch(() => state.brand);
+  const slot = (key, label, hint, dark = false) => {
+    const has = brand?.assets?.[key];
+    return `<div class="col-md-4">
+      <div class="form-label">${label}</div>
+      <div class="brand-preview ${dark ? 'brand-preview--dark' : ''} mb-2">${has ? `<img src="/brand/${key}?v=${encodeURIComponent(brand.version)}" alt="${label} preview">` : `<span class="${dark ? '' : 'text-secondary'}" style="${dark ? 'color:#c4bdb2' : ''}">Default</span>`}</div>
+      <input class="form-control" type="file" data-asset="${key}" accept="${key === 'favicon' ? '.png,.svg,.ico,.webp,image/png,image/svg+xml,image/x-icon,image/webp' : '.png,.svg,.webp,.jpg,.jpeg,image/png,image/svg+xml,image/webp,image/jpeg'}" aria-label="Upload ${label}">
+      <div class="form-hint">${hint}</div>
+      ${has ? `<button class="btn btn-sm mt-2" type="button" data-remove-asset="${key}">${I.trash} Remove</button>` : ''}
+    </div>`;
+  };
+  const brandingCard = card(
+    'Branding',
+    `<form id="bf">
+      <div class="row g-3">
+        <div class="col-md-4"><label class="form-label" for="b-name">Name</label><input class="form-control" id="b-name" name="name" maxlength="40" value="${esc(brand?.name || '')}"><div class="form-hint">Shown in the sidebar, browser tab, emails and MCP clients.</div></div>
+        <div class="col-md-4"><label class="form-label" for="b-accent">Accent colour</label>
+          <div class="input-group"><input class="form-control form-control-color" type="color" id="b-accent-pick" value="${esc(brand?.accent || '#c0392b')}" aria-label="Pick accent colour"><input class="form-control font-monospace" id="b-accent" name="accent" value="${esc(brand?.accent || '#c0392b')}" pattern="#[0-9a-fA-F]{6}"></div>
+          <div class="form-hint">Text and buttons are darkened or lightened automatically so they keep 7:1 contrast in both themes.</div></div>
+        <div class="col-md-4"><div class="form-label">Sidebar</div>
+          <label class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" name="show_name" ${brand?.show_name !== false ? 'checked' : ''}><span class="form-check-label">Show the name next to the logo</span></label>
+          <div class="form-hint">Turn off if your logo already includes the name.</div></div>
+        <div class="col-12"><label class="form-label" for="b-msg">Login page message</label><input class="form-control" id="b-msg" name="login_message" maxlength="280" value="${esc(brand?.login_message || '')}" placeholder="Optional, e.g. Search reporting for Acme Inc."></div>
+      </div>
+      <div class="btn-list mt-3"><button class="btn btn-primary" type="submit">Save branding</button><button class="btn" type="button" id="b-reset">Reset to default</button></div>
+    </form>
+    <hr class="my-4">
+    <div class="row g-3">
+      ${slot('logo-light', 'Logo', 'PNG, SVG, WebP or JPEG, 512 KB max. About 4:1 works best.')}
+      ${slot('logo-dark', 'Logo for dark mode', 'Optional. Falls back to the light logo.', true)}
+      ${slot('favicon', 'Favicon', 'Square PNG, SVG or ICO. Falls back to the logo.')}
+    </div>
+    <div id="bmsg" class="mt-3"></div>`,
+  );
   const siteCounts = new Map((sites.service_accounts || []).map((a) => [String(a.id), a]));
   const origin = location.origin;
   const untracked = sites.sites.filter((s) => !s.tracked);
@@ -809,6 +843,8 @@ async function settingsView() {
         </div>`,
       )}</div>
 
+      <div class="col-12">${brandingCard}</div>
+
       <div class="col-12">${card(
         'Sync',
         table(
@@ -833,6 +869,55 @@ async function settingsView() {
         { flush: true },
       )}</div>
     </div>`,
+  );
+
+  const bmsg = (kind, text) => ($('#bmsg').innerHTML = alertBox(kind, text));
+  $('#b-accent-pick')?.addEventListener('input', (e) => ($('#b-accent').value = e.target.value));
+  $('#b-accent')?.addEventListener('input', (e) => {
+    if (/^#[0-9a-f]{6}$/i.test(e.target.value)) $('#b-accent-pick').value = e.target.value;
+  });
+  $('#bf')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    try {
+      const b = await api('/branding', {}, { method: 'POST', body: { name: fd.get('name'), accent: fd.get('accent'), login_message: fd.get('login_message'), show_name: fd.get('show_name') === 'on' } });
+      applyBrand(b);
+      bmsg('success', 'Branding saved.');
+    } catch (err) {
+      bmsg('danger', esc(err.message));
+    }
+  });
+  $('#b-reset')?.addEventListener('click', async () => {
+    if (!confirm('Reset the name, colour, message and all images to the defaults?')) return;
+    applyBrand(await api('/branding/reset', {}, { method: 'POST', body: {} }));
+    route();
+  });
+  view.querySelectorAll('[data-asset]').forEach((input) =>
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      if (file.size > 512 * 1024) return bmsg('danger', 'Images must be 512 KB or smaller.');
+      try {
+        const res = await fetch(`/api/branding/${input.dataset.asset}`, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'content-type': file.type || 'application/octet-stream' },
+          body: file,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+        applyBrand(data);
+        route();
+      } catch (err) {
+        bmsg('danger', esc(err.message));
+      }
+    }),
+  );
+  view.querySelectorAll('[data-remove-asset]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      applyBrand(await api(`/branding/${b.dataset.removeAsset}`, {}, { method: 'DELETE' }));
+      route();
+    }),
   );
 
   view.querySelectorAll('[data-copy-text]').forEach((b) =>
@@ -974,6 +1059,28 @@ async function settingsView() {
   });
 }
 
+// ---------- branding ----------
+
+function applyBrand(b) {
+  if (!b) return;
+  state.brand = b;
+  document.title = b.name;
+  const v = encodeURIComponent(b.version);
+  const el = $('#brand');
+  const light = b.assets['logo-light'];
+  const dark = b.assets['logo-dark'];
+  el.classList.toggle('has-logo', Boolean(light));
+  el.setAttribute('aria-label', b.name);
+  el.innerHTML =
+    (light ? `<img class="brand-logo brand-logo--light ${dark ? 'has-dark' : ''}" src="/brand/logo-light?v=${v}" alt="">` : '') +
+    (light && dark ? `<img class="brand-logo brand-logo--dark" src="/brand/logo-dark?v=${v}" alt="">` : '') +
+    (!light || b.show_name ? `<span class="brand-name">${esc(b.name)}</span>` : '');
+  const fav = $('#favicon');
+  if (fav) fav.href = `/brand/favicon?v=${v}`;
+  const css = $('#brand-css');
+  if (css) css.href = `/brand.css?v=${v}`;
+}
+
 // ---------- boot ----------
 
 async function loadProperties() {
@@ -999,8 +1106,7 @@ document.addEventListener('click', async (e) => {
 async function boot() {
   try {
     state.me = await api('/me');
-    document.title = state.me.app;
-    $('#brand').textContent = state.me.app;
+    applyBrand(state.me.brand);
     await loadProperties();
   } catch (e) {
     view.innerHTML = page({ title: 'Can’t load the dashboard' }, alertBox('danger', esc(e.message)));

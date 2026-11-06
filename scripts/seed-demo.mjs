@@ -4,6 +4,10 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
+// Pass --config <file> through to wrangler if given.
+const ci = process.argv.indexOf('--config');
+const extra = ci > -1 ? ['--config', process.argv[ci + 1]] : [];
+
 function hashId(text, seed = 0) {
   let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
   for (let i = 0; i < text.length; i++) {
@@ -40,7 +44,7 @@ const dates = [];
 for (let i = days + 2; i >= 3; i--) dates.push(new Date(today.getTime() - i * 86400000).toISOString().slice(0, 10));
 
 const out = [
-  'DELETE FROM properties; DELETE FROM pages; DELETE FROM queries; DELETE FROM daily_totals; DELETE FROM page_daily; DELETE FROM query_daily; DELETE FROM query_page_daily; DELETE FROM dim_daily; DELETE FROM sync_jobs; DELETE FROM url_inspections; DELETE FROM keyword_groups; DELETE FROM keyword_group_terms;',
+  'DELETE FROM settings; DELETE FROM service_accounts; DELETE FROM properties; DELETE FROM pages; DELETE FROM queries; DELETE FROM daily_totals; DELETE FROM page_daily; DELETE FROM query_daily; DELETE FROM query_page_daily; DELETE FROM dim_daily; DELETE FROM sync_jobs; DELETE FROM url_inspections; DELETE FROM keyword_groups; DELETE FROM keyword_group_terms;',
   `INSERT INTO properties (id, site_url, label, brand_terms) VALUES (${PID}, 'sc-domain:example.com', 'Example (demo)', '["example"]');`,
 ];
 for (const p of pages) out.push(`INSERT INTO pages (id, property_id, url) VALUES (${pageId(p)}, ${PID}, ${q(p)});`);
@@ -89,5 +93,7 @@ for (const t of ['best wordpress hosting', 'best seo plugin', 'review backup plu
 
 mkdirSync('.wrangler', { recursive: true });
 writeFileSync('.wrangler/seed-demo.sql', out.join('\n'));
-execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--file', '.wrangler/seed-demo.sql'], { stdio: ['inherit', 'ignore', 'inherit'] });
+// A fresh checkout has no local tables until the Worker first runs, so apply migrations here.
+execFileSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'DB', '--local', ...extra], { stdio: ['inherit', 'ignore', 'inherit'] });
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--file', '.wrangler/seed-demo.sql', ...extra], { stdio: ['inherit', 'ignore', 'inherit'] });
 console.log(`Seeded demo property with ${dates.length} days, ${pages.length} pages, ${queries.length} queries.`);
