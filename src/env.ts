@@ -46,6 +46,8 @@ export interface Property {
   inspection_budget: number;
   active: number;
   created_at: string;
+  show_google_updates?: number;
+  service_account_id?: number | null;
 }
 
 export class HttpError extends Error {

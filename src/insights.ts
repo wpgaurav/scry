@@ -1,5 +1,13 @@
 import { HttpError, type Env, type Property } from './env';
-import { dateCond, metrics, NEVER, resolveRange, type Range, type ReportArgs } from './reports';
+import { dateCond, metrics, NEVER, resolveRange, spanCond, withGroup, type Range, type ReportArgs } from './reports';
+import { groupSql, type ContentGroup } from './contentgroups';
+
+/** Optional content-group join + condition on the page id column of alias x. */
+function gj(g: ContentGroup | null | undefined) {
+  if (!g) return { join: '', where: '', params: [] as string[] };
+  const c = groupSql(g, 'gx.url');
+  return { join: ' JOIN pages gx ON gx.id = x.page_id', where: ` AND ${c.sql}`, params: c.params };
+}
 import { addDays, round, sqlNum } from './util';
 
 export const INSIGHTS = {
@@ -58,9 +66,11 @@ async function compareAgg(
   having: string,
   order: string,
   limit: number,
+  g?: ContentGroup | null,
 ) {
   const idCol = kind === 'page' ? 'page_id' : 'query_id';
-  const src = kind === 'page' ? 'page_daily' : 'query_daily';
+  const src = kind === 'page' ? 'page_daily' : g ? 'query_page_daily' : 'query_daily';
+  const G = gj(g);
   const label = kind === 'page' ? 'JOIN pages L ON L.id = t.id' : 'JOIN queries L ON L.id = t.id';
   const labelCol = kind === 'page' ? 'L.url' : 'L.text';
   const cur = dateCond(r.from, r.to);
@@ -74,10 +84,12 @@ async function compareAgg(
          SUM(CASE WHEN ${prv} THEN x.clicks ELSE 0 END) AS p_clicks,
          SUM(CASE WHEN ${prv} THEN x.impressions ELSE 0 END) AS p_impressions,
          SUM(CASE WHEN ${prv} THEN x.pos_sum ELSE 0 END) AS p_pos_sum
-       FROM ${src} x WHERE ${base(p, r)} AND ((${cur}) OR (${prv}))
+       FROM ${src} x${G.join} WHERE ${base(p, r)} AND ${spanCond(r)}${G.where}
        GROUP BY x.${idCol}
      ) WHERE ${having} ORDER BY ${order} LIMIT ${limit}) t ${label}`,
-  ).all<Record<string, number | string>>();
+  )
+    .bind(...G.params)
+    .all<Record<string, number | string>>();
   return results.map((x) => {
     const c = metrics(x.clicks as number, x.impressions as number, x.pos_sum as number);
     const pr = metrics(x.p_clicks as number, x.p_impressions as number, x.p_pos_sum as number);
@@ -98,7 +110,7 @@ export async function bestPages(env: Env, p: Property, r: Range, queryIds: numbe
   const { results } = await env.DB.prepare(
     `SELECT t.query_id AS q, pg.url AS url FROM (
        SELECT x.query_id, x.page_id, ROW_NUMBER() OVER (PARTITION BY x.query_id ORDER BY SUM(x.impressions) DESC) AS rn
-       FROM query_page_daily x WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)} AND x.query_id IN (${queryIds.map(sqlNum).join(',')})
+       FROM query_page_daily x INDEXED BY qpd_query WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)} AND x.query_id IN (${queryIds.map(sqlNum).join(',')})
        GROUP BY x.query_id, x.page_id
      ) t JOIN pages pg ON pg.id = t.page_id WHERE t.rn = 1`,
   ).all<{ q: number; url: string }>();
@@ -107,11 +119,14 @@ export async function bestPages(env: Env, p: Property, r: Range, queryIds: numbe
 
 export async function insight(env: Env, p: Property, kind: InsightKind, a: InsightArgs) {
   if (!(kind in INSIGHTS)) throw new HttpError(400, `kind must be one of ${Object.keys(INSIGHTS).join(', ')}`);
+  a = await withGroup(env, p, a);
+  const g = a._group ?? null;
+  const G = gj(g);
   const r = await resolveRange(env, p, { ...a, compare: a.compare && a.compare !== 'none' ? a.compare : 'previous' });
   const limit = lim(a.limit);
   const minImpr = Number(a.min_impressions) || 0;
   const minClicks = Number(a.min_clicks) || 0;
-  const meta = { kind, description: INSIGHTS[kind], property: p.site_url, range: { from: r.from, to: r.to, compare_from: r.prevFrom, compare_to: r.prevTo, search_type: r.searchType } };
+  const meta = { kind, description: INSIGHTS[kind], property: p.site_url, group: g?.name ?? null, range: { from: r.from, to: r.to, compare_from: r.prevFrom, compare_to: r.prevTo, search_type: r.searchType } };
 
   switch (kind) {
     case 'striking_distance':
@@ -121,12 +136,14 @@ export async function insight(env: Env, p: Property, kind: InsightKind, a: Insig
       const floor = minImpr || (striking ? 100 : 200);
       const { results } = await env.DB.prepare(
         `SELECT x.query_id AS id, L.text AS label, SUM(x.clicks) AS c, SUM(x.impressions) AS i, SUM(x.pos_sum) AS ps
-         FROM query_daily x JOIN queries L ON L.id = x.query_id
-         WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)}
+         FROM ${g ? 'query_page_daily' : 'query_daily'} x JOIN queries L ON L.id = x.query_id${G.join}
+         WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)}${G.where}
          GROUP BY x.query_id
          HAVING i >= ${floor} AND ps / i ${striking ? 'BETWEEN 4 AND 20' : '<= 10'}
          ORDER BY i DESC LIMIT 2000`,
-      ).all<{ id: number; label: string; c: number; i: number; ps: number }>();
+      )
+        .bind(...G.params)
+        .all<{ id: number; label: string; c: number; i: number; ps: number }>();
       let rows = results.map((x) => {
         const m = metrics(x.c, x.i, x.ps);
         const bucket = Math.min(20, Math.max(1, Math.round(m.position!)));
@@ -151,25 +168,25 @@ export async function insight(env: Env, p: Property, kind: InsightKind, a: Insig
     case 'page_decliners':
     case 'query_decliners': {
       const k = kind === 'page_decliners' ? 'page' : 'query';
-      const rows = await compareAgg(env, p, r, k, `p_clicks >= ${minClicks || 10} AND clicks < p_clicks`, 'clicks - p_clicks ASC', limit);
+      const rows = await compareAgg(env, p, r, k, `p_clicks >= ${minClicks || 10} AND clicks < p_clicks`, 'clicks - p_clicks ASC', limit, g);
       return { ...meta, rows };
     }
     case 'page_gainers':
     case 'query_gainers': {
       const k = kind === 'page_gainers' ? 'page' : 'query';
-      const rows = await compareAgg(env, p, r, k, `clicks >= ${minClicks || 10} AND clicks > p_clicks`, 'clicks - p_clicks DESC', limit);
+      const rows = await compareAgg(env, p, r, k, `clicks >= ${minClicks || 10} AND clicks > p_clicks`, 'clicks - p_clicks DESC', limit, g);
       return { ...meta, rows };
     }
     case 'new_queries': {
-      const rows = await compareAgg(env, p, r, 'query', `p_impressions = 0 AND impressions >= ${minImpr || 20}`, 'impressions DESC', limit);
+      const rows = await compareAgg(env, p, r, 'query', `p_impressions = 0 AND impressions >= ${minImpr || 20}`, 'impressions DESC', limit, g);
       return { ...meta, rows };
     }
     case 'lost_queries': {
-      const rows = await compareAgg(env, p, r, 'query', `impressions = 0 AND p_impressions >= ${minImpr || 50}`, 'p_impressions DESC', limit);
+      const rows = await compareAgg(env, p, r, 'query', `impressions = 0 AND p_impressions >= ${minImpr || 50}`, 'p_impressions DESC', limit, g);
       return { ...meta, rows };
     }
     case 'zero_clicks': {
-      const rows = await compareAgg(env, p, r, 'page', `clicks = 0 AND impressions >= ${minImpr || 500}`, 'impressions DESC', limit);
+      const rows = await compareAgg(env, p, r, 'page', `clicks = 0 AND impressions >= ${minImpr || 500}`, 'impressions DESC', limit, g);
       return { ...meta, rows };
     }
     case 'cannibalization': {
@@ -177,7 +194,7 @@ export async function insight(env: Env, p: Property, kind: InsightKind, a: Insig
       const { results } = await env.DB.prepare(
         `WITH qp AS (
            SELECT x.query_id, x.page_id, SUM(x.impressions) AS i, SUM(x.clicks) AS c, SUM(x.pos_sum) AS ps
-           FROM query_page_daily x WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)}
+           FROM query_page_daily x${G.join} WHERE ${base(p, r)} AND ${dateCond(r.from, r.to)}${G.where}
            GROUP BY x.query_id, x.page_id
          ),
          qt AS (SELECT query_id, SUM(i) AS ti, SUM(c) AS tc FROM qp GROUP BY query_id HAVING ti >= ${floor}),
@@ -186,7 +203,9 @@ export async function insight(env: Env, p: Property, kind: InsightKind, a: Insig
          SELECT q.text AS query, pg.url AS page, comp.i, comp.c, comp.ps, comp.ti, comp.tc
          FROM comp JOIN top USING (query_id) JOIN queries q ON q.id = comp.query_id JOIN pages pg ON pg.id = comp.page_id
          ORDER BY comp.ti DESC, comp.i DESC`,
-      ).all<{ query: string; page: string; i: number; c: number; ps: number; ti: number; tc: number }>();
+      )
+        .bind(...G.params)
+        .all<{ query: string; page: string; i: number; c: number; ps: number; ti: number; tc: number }>();
       const groups = new Map<string, { query: string; impressions: number; clicks: number; pages: unknown[] }>();
       for (const x of results) {
         if (!groups.has(x.query)) groups.set(x.query, { query: x.query, impressions: x.ti, clicks: x.tc, pages: [] });
@@ -204,12 +223,14 @@ export async function insight(env: Env, p: Property, kind: InsightKind, a: Insig
              SUM(CASE WHEN ${b(1)} THEN x.clicks ELSE 0 END) AS b2,
              SUM(CASE WHEN ${b(2)} THEN x.clicks ELSE 0 END) AS b3,
              SUM(CASE WHEN ${b(3)} THEN x.clicks ELSE 0 END) AS b4
-           FROM page_daily x WHERE ${base(p, r)} AND ${dateCond(addDays(t, -111), t)}
+           FROM page_daily x${G.join} WHERE ${base(p, r)} AND ${dateCond(addDays(t, -111), t)}${G.where}
            GROUP BY x.page_id
            HAVING b4 >= ${minClicks || 50} AND b1 < b2 AND b2 < b3 AND b3 < b4 AND b1 <= b4 * 0.8
            ORDER BY (b4 - b1) DESC LIMIT ${limit}
          ) t JOIN pages pg ON pg.id = t.page_id`,
-      ).all<{ page: string; b1: number; b2: number; b3: number; b4: number }>();
+      )
+        .bind(...G.params)
+        .all<{ page: string; b1: number; b2: number; b3: number; b4: number }>();
       return {
         ...meta,
         rows: results.map((x) => ({

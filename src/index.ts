@@ -11,6 +11,8 @@ import {
   revokeApiKey,
 } from './auth';
 import { ensureSchema } from './migrate';
+import { appOrigin, createChannel, deleteChannel, listChannels, runAlertChecks, testChannel } from './alerts';
+import { importGoogleUpdates } from './annotations';
 import { assetResponse, brandCss, deleteAsset, getBranding, isAsset, MAX_ASSET_BYTES, resetBranding, saveAsset, saveBranding } from './branding';
 import { HttpError, type Env, type Job, type Session } from './env';
 import { accessToken, GoogleError, listSites } from './google';
@@ -27,6 +29,7 @@ import { toCsv } from './util';
 
 type App = { Bindings: Env; Variables: { session: Session } };
 const app = new Hono<App>();
+let rememberedOrigin = '';
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -104,6 +107,14 @@ app.use('*', async (c, next) => {
       if (!accessConfigured(c.env) && !passwordConfigured(c.env)) return c.html(setupPage(c.env.APP_NAME || 'Scry'), 403);
     }
     throw e;
+  }
+  const session = c.get('session');
+  if (session.kind === 'human' && session.email !== 'local') {
+    const origin = new URL(c.req.url).origin;
+    if (rememberedOrigin !== origin) {
+      rememberedOrigin = origin;
+      c.executionCtx.waitUntil(c.env.KV.put('app:origin', origin));
+    }
   }
   await next();
 });
@@ -226,6 +237,25 @@ app.delete('/api/service-accounts/:id', async (c) => {
   return c.json({ removed: acct.client_email, moved: moves });
 });
 
+// Alert channels hold webhook URLs and addresses, so only signed-in humans manage them.
+app.get('/api/alert-channels', async (c) => {
+  requireHuman(c.get('session'));
+  return c.json({ channels: await listChannels(c.env), email_configured: Boolean(c.env.EMAIL_API_URL && c.env.EMAIL_API_KEY && c.env.DIGEST_FROM) });
+});
+app.post('/api/alert-channels', async (c) => {
+  requireHuman(c.get('session'));
+  const body = await c.req.json<Record<string, string>>().catch(() => ({}) as Record<string, string>);
+  return c.json(await createChannel(c.env, body), 201);
+});
+app.post('/api/alert-channels/:id/test', async (c) => {
+  requireHuman(c.get('session'));
+  return c.json(await testChannel(c.env, Number(c.req.param('id'))));
+});
+app.delete('/api/alert-channels/:id', async (c) => {
+  requireHuman(c.get('session'));
+  return c.json(await deleteChannel(c.env, Number(c.req.param('id'))));
+});
+
 // Branding settings: signed-in humans only.
 app.get('/api/branding', async (c) => {
   requireHuman(c.get('session'));
@@ -323,10 +353,18 @@ export default {
     await ensureSchema(env);
     switch (controller.cron) {
       case '30 5 * * *':
-        ctx.waitUntil(planInspections(env));
+        // Daily: queue URL inspections, refresh Google update annotations, then evaluate alerts.
+        ctx.waitUntil(
+          (async () => {
+            await planInspections(env).catch((e) => console.error('inspections', e));
+            await importGoogleUpdates(env).catch((e) => console.error('google updates', e));
+            const r = await runAlertChecks(env).catch((e) => ({ error: String(e) }));
+            console.log('alerts', JSON.stringify(r));
+          })(),
+        );
         break;
       case '0 7 * * 1':
-        ctx.waitUntil(sendDigest(env).then((r) => console.log('digest', JSON.stringify(r))));
+        ctx.waitUntil(appOrigin(env).then((o) => sendDigest(env, o)).then((r) => console.log('digest', JSON.stringify(r))));
         break;
       default:
         ctx.waitUntil(planAllSyncs(env).then((n) => console.log('sync queued', n)));

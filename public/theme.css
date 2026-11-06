@@ -100,6 +100,9 @@ small, .small, .subheader, .form-hint, .datagrid-title, .badge, .table thead th,
 .badge-soft-good { background: color-mix(in srgb, var(--gt-good) 14%, transparent); color: var(--gt-good); }
 .badge-soft-bad { background: color-mix(in srgb, var(--gt-bad) 14%, transparent); color: var(--gt-bad); }
 .badge-soft { background: var(--tblr-bg-surface-secondary); color: var(--gt-ink); }
+.badge-soft-warn { background: #fbefd6; color: #5f4100; }
+[data-bs-theme="dark"] .badge-soft-warn { background: #3a2f1a; color: #f3cf7a; }
+.badge-note { background: var(--tblr-primary-lt); color: var(--gt-accent-ink); }
 .progress-bar { background-color: var(--gt-accent); }
 
 .url { word-break: break-all; }

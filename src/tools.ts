@@ -7,7 +7,10 @@ import { INSIGHTS, insight, type InsightKind } from './insights';
 import { deleteGroup, groupReport, listGroups, saveGroup } from './groups';
 import { getInspection, indexingReport, inspectAndStore, refreshSitemaps, submitAndRefresh } from './indexing';
 import { planAllSyncs, planSync, syncStatus } from './sync';
-import { isDate, sha256Hex } from './util';
+import { addDays, isDate, sha256Hex, todayUtc } from './util';
+import { countPages, deleteContentGroup, listContentGroups, previewPatterns, saveContentGroup } from './contentgroups';
+import { addAnnotation, deleteAnnotation, importGoogleUpdates, listAnnotations } from './annotations';
+import { acknowledgeAlerts, deleteRule, listAlerts, listChannels, listRules, RULE_KINDS, runAlertChecks, saveRule } from './alerts';
 
 export interface ParamSchema {
   type: 'string' | 'integer' | 'number' | 'boolean' | 'array';
@@ -46,6 +49,7 @@ const RANGE: Record<string, ParamSchema> = {
   country: { type: 'string', description: 'ISO 3166-1 alpha-3 country code, lowercase (usa, ind, gbr). Triggers a live API call.' },
   device: { type: 'string', enum: ['DESKTOP', 'MOBILE', 'TABLET'], description: 'Device filter. Triggers a live API call.' },
   brand: { type: 'string', enum: ['branded', 'nonbranded', 'all'], description: 'Brand filter using the property brand terms.' },
+  group: { type: 'string', description: 'Content group name or id. Limits results to pages matching the group patterns (see list_content_groups).' },
 };
 
 const TABLE: Record<string, ParamSchema> = {
@@ -75,6 +79,7 @@ async function propertyInfo(env: Env, p: Property) {
     search_types: propertySearchTypes(p),
     brand_terms: JSON.parse(p.brand_terms || '[]'),
     inspection_budget: p.inspection_budget,
+    show_google_updates: Boolean(p.show_google_updates ?? 1),
     data: { first_date: row?.first ?? null, latest_final_date: row?.latest_final ?? null, latest_date: row?.latest ?? null, days_stored: row?.days ?? 0 },
     keyword_groups: groups?.n ?? 0,
   };
@@ -176,6 +181,7 @@ export const TOOLS: ToolDef[] = [
         brand_terms: { type: 'array', items: { type: 'string' }, description: 'Lowercase terms; a query containing any of them counts as branded.' },
         inspection_budget: { type: 'integer', minimum: 0, maximum: 1900 },
         active: { type: 'boolean' },
+        show_google_updates: { type: 'boolean', description: 'Show confirmed Google ranking updates on this property\'s charts.' },
       },
       required: ['property'],
     },
@@ -192,6 +198,7 @@ export const TOOLS: ToolDef[] = [
       if (a.brand_terms !== undefined) sets.push('brand_terms = ?'), vals.push(JSON.stringify((a.brand_terms as string[]).map((x) => x.trim().toLowerCase()).filter(Boolean)));
       if (a.inspection_budget !== undefined) sets.push('inspection_budget = ?'), vals.push(Math.min(1900, Math.max(0, Number(a.inspection_budget))));
       if (a.active !== undefined) sets.push('active = ?'), vals.push(a.active ? 1 : 0);
+      if (a.show_google_updates !== undefined) sets.push('show_google_updates = ?'), vals.push(a.show_google_updates ? 1 : 0);
       if (sets.length) await env.DB.prepare(`UPDATE properties SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, p.id).run();
       const fresh = await resolveProperty(env, p.id);
       if (a.search_types !== undefined) await planSync(env, fresh);
@@ -286,6 +293,7 @@ export const TOOLS: ToolDef[] = [
         to: RANGE.to,
         compare: RANGE.compare,
         search_type: RANGE.search_type,
+        group: RANGE.group,
         limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Default 50.' },
         min_impressions: { type: 'integer', minimum: 0 },
         min_clicks: { type: 'integer', minimum: 0 },
@@ -453,6 +461,188 @@ export const TOOLS: ToolDef[] = [
     input: { properties: { ...PROPERTY, group: { type: 'string' } }, required: ['property', 'group'] },
     run: async (env, a) => deleteGroup(env, await prop(env, a), a.group),
   },
+  // ---------- content groups ----------
+  {
+    name: 'list_content_groups',
+    title: 'Content groups',
+    description: 'Content groups (sections of a site defined by URL patterns like /blog/*) with each group\'s clicks, impressions, CTR, position and change. Pass a group name as `group` to other reports to filter by it.',
+    scope: 'read',
+    http: { method: 'GET', path: '/p/:property/content-groups' },
+    input: {
+      properties: { ...PROPERTY, days: RANGE.days, from: RANGE.from, to: RANGE.to, compare: RANGE.compare, search_type: RANGE.search_type, names_only: { type: 'boolean', description: 'Return just names and patterns (fast).' } },
+      required: ['property'],
+    },
+    run: async (env, a) => {
+      const p = await prop(env, a);
+      const groups = await listContentGroups(env, p);
+      if (a.names_only) return { property: p.site_url, groups: groups.map((g) => ({ id: g.id, name: g.name, include: g.include, exclude: g.exclude })) };
+      const rows = await Promise.all(
+        groups.map(async (g) => {
+          const [s, pages] = await Promise.all([summary(env, p, { ...a, group: g.name }), countPages(env, p, g)]);
+          return { id: g.id, name: g.name, include: g.include, exclude: g.exclude, pages, ...s.current, delta: s.delta, range: s.range };
+        }),
+      );
+      return { property: p.site_url, groups: rows };
+    },
+  },
+  {
+    name: 'preview_content_group',
+    title: 'Preview content group patterns',
+    description: 'Shows how many stored pages match include/exclude patterns, with a sample, before saving a group. Patterns: "/blog/" (starts with), "/docs/*/api" (wildcard), "pricing" (anywhere in the path).',
+    scope: 'read',
+    http: { method: 'POST', path: '/p/:property/content-groups/preview' },
+    input: { properties: { ...PROPERTY, include: { type: 'array', items: { type: 'string' } }, exclude: { type: 'array', items: { type: 'string' } } }, required: ['property', 'include'] },
+    run: async (env, a) => previewPatterns(env, await prop(env, a), a.include, a.exclude || []),
+  },
+  {
+    name: 'save_content_group',
+    title: 'Save content group',
+    description: 'Create or replace a content group from URL path patterns.',
+    scope: 'write',
+    http: { method: 'POST', path: '/p/:property/content-groups' },
+    input: {
+      properties: { ...PROPERTY, name: { type: 'string' }, include: { type: 'array', items: { type: 'string' } }, exclude: { type: 'array', items: { type: 'string' } } },
+      required: ['property', 'name', 'include'],
+    },
+    run: async (env, a) => saveContentGroup(env, await prop(env, a), a.name, a.include, a.exclude || []),
+  },
+  {
+    name: 'delete_content_group',
+    title: 'Delete content group',
+    description: 'Delete a content group. Search data is not affected.',
+    scope: 'write',
+    http: { method: 'DELETE', path: '/p/:property/content-groups/:group' },
+    input: { properties: { ...PROPERTY, group: { type: 'string' } }, required: ['property', 'group'] },
+    run: async (env, a) => deleteContentGroup(env, await prop(env, a), a.group),
+  },
+
+  // ---------- annotations ----------
+  {
+    name: 'list_annotations',
+    title: 'Annotations',
+    description: 'Dated notes for a property (and ones for all properties), including confirmed Google ranking updates. Use them to explain traffic changes.',
+    scope: 'read',
+    http: { method: 'GET', path: '/annotations' },
+    input: { properties: { property: { ...PROPERTY.property, description: 'Optional. Omit for notes that apply to every property.' }, days: RANGE.days, from: RANGE.from, to: RANGE.to } },
+    run: async (env, a) => {
+      const p = a.property ? await prop(env, a) : null;
+      const to = a.to || todayUtc();
+      const from = a.from || addDays(to, -((Number(a.days) || 486) - 1));
+      return { property: p?.site_url ?? null, from, to, annotations: await listAnnotations(env, p, from, to) };
+    },
+  },
+  {
+    name: 'add_annotation',
+    title: 'Add annotation',
+    description: 'Mark a date (or range) with a note, e.g. a redesign, migration, outage or content push. Omit property to apply it to every property.',
+    scope: 'write',
+    http: { method: 'POST', path: '/annotations' },
+    input: {
+      properties: {
+        property: { ...PROPERTY.property, description: 'Optional. Omit to apply to every property.' },
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'Optional end date for a range.' },
+        title: { type: 'string' },
+        note: { type: 'string' },
+        category: { type: 'string', enum: ['note', 'release', 'content', 'technical', 'incident'] },
+        url: { type: 'string', description: 'Optional https link, e.g. a changelog or PR.' },
+      },
+      required: ['date', 'title'],
+    },
+    run: async (env, a) => addAnnotation(env, a.property ? await prop(env, a) : null, a),
+  },
+  {
+    name: 'delete_annotation',
+    title: 'Delete annotation',
+    description: 'Delete a manual annotation by id.',
+    scope: 'write',
+    http: { method: 'DELETE', path: '/annotations/:id' },
+    input: { properties: { id: { type: 'integer' } }, required: ['id'] },
+    run: async (env, a) => deleteAnnotation(env, Number(a.id)),
+  },
+  {
+    name: 'import_google_updates',
+    title: 'Import Google updates',
+    description: 'Fetch confirmed Google ranking updates from the Search Status Dashboard now (also runs daily).',
+    scope: 'write',
+    http: { method: 'POST', path: '/annotations/google' },
+    input: { properties: {} },
+    run: async (env) => ({ imported: await importGoogleUpdates(env) }),
+  },
+
+  // ---------- alerts ----------
+  {
+    name: 'list_alerts',
+    title: 'Alerts',
+    description: 'Fired alerts (traffic drops, deindexed pages, sitemap errors, canonical mismatches, keyword groups slipping), newest first.',
+    scope: 'read',
+    http: { method: 'GET', path: '/alerts' },
+    input: {
+      properties: {
+        status: { type: 'string', enum: ['open', 'acknowledged', 'all'], description: 'Default open.' },
+        property: { ...PROPERTY.property, description: 'Optional.' },
+        limit: { type: 'integer', minimum: 1, maximum: 500 },
+      },
+    },
+    run: async (env, a) => listAlerts(env, a.status || 'open', a.property ? (await prop(env, a)).id : undefined, a.limit || 100),
+  },
+  {
+    name: 'acknowledge_alerts',
+    title: 'Acknowledge alerts',
+    description: 'Mark alerts as handled. Pass ids, or all=true for every open alert.',
+    scope: 'write',
+    http: { method: 'POST', path: '/alerts/acknowledge' },
+    input: { properties: { ids: { type: 'array', items: { type: 'string' } }, all: { type: 'boolean' } } },
+    run: async (env, a) => acknowledgeAlerts(env, a.all ? 'all' : ((a.ids || []) as string[]).map(Number).filter(Boolean)),
+  },
+  {
+    name: 'run_alert_checks',
+    title: 'Run alert checks',
+    description: 'Evaluate every enabled alert rule now and deliver anything new (also runs daily).',
+    scope: 'write',
+    http: { method: 'POST', path: '/alerts/run' },
+    input: { properties: {} },
+    run: async (env) => runAlertChecks(env),
+  },
+  {
+    name: 'list_alert_rules',
+    title: 'Alert rules',
+    description: 'Configured alert rules, the available rule kinds with their defaults, and delivery channels (names only).',
+    scope: 'read',
+    http: { method: 'GET', path: '/alerts/rules' },
+    input: { properties: {} },
+    run: async (env) => ({ kinds: RULE_KINDS, rules: await listRules(env), channels: await listChannels(env) }),
+  },
+  {
+    name: 'save_alert_rule',
+    title: 'Save alert rule',
+    description: `Create (or update with id) an alert rule. Kinds: ${Object.entries(RULE_KINDS).map(([k, v]) => `${k} (${v.help})`).join('; ')}`,
+    scope: 'write',
+    http: { method: 'POST', path: '/alerts/rules' },
+    input: {
+      properties: {
+        id: { type: 'integer', description: 'Existing rule id to update.' },
+        property: { ...PROPERTY.property, description: 'Optional. Omit to watch every property.' },
+        kind: { type: 'string', enum: Object.keys(RULE_KINDS) },
+        threshold: { type: 'number', description: 'Percent for drops, positions for keyword_group_drop.' },
+        min_clicks: { type: 'integer', minimum: 0, description: 'Ignore pages or sites below this many clicks.' },
+        group: { type: 'string', description: 'Keyword group name, for keyword_group_drop.' },
+        channels: { type: 'array', items: { type: 'string' }, description: 'Channel ids from list_alert_rules.' },
+        enabled: { type: 'boolean' },
+      },
+      required: ['kind'],
+    },
+    run: async (env, a) => saveRule(env, a),
+  },
+  {
+    name: 'delete_alert_rule',
+    title: 'Delete alert rule',
+    description: 'Delete an alert rule. Past alerts stay.',
+    scope: 'write',
+    http: { method: 'DELETE', path: '/alerts/rules/:id' },
+    input: { properties: { id: { type: 'integer' } }, required: ['id'] },
+    run: async (env, a) => deleteRule(env, Number(a.id)),
+  },
   {
     name: 'sync_status',
     title: 'Sync status',
@@ -545,6 +735,6 @@ export async function callTool(env: Env, session: Session, name: string, raw: Re
 
 const REPORT_CACHE_SECONDS = 900;
 /** Cheap or live tools that should always be fresh. */
-const UNCACHED = new Set(['list_gsc_sites', 'sync_status', 'url_inspection', 'list_keyword_groups', 'search_analytics']);
+const UNCACHED = new Set(['list_gsc_sites', 'sync_status', 'url_inspection', 'list_keyword_groups', 'search_analytics', 'list_alerts', 'list_alert_rules', 'list_annotations', 'preview_content_group']);
 
 export { resolveRange };

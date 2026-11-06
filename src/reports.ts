@@ -3,6 +3,8 @@ import { brandTerms, SEARCH_TYPES } from './db';
 import { searchAnalytics, type DimensionFilter, type SearchAnalyticsRequest, type SearchAnalyticsRow } from './google';
 import { addDays, assertDate, daysBetween, isDate, likeContains, pageId, queryId, round, sha256Hex, todayUtc } from './util';
 import { FINAL_LAG_DAYS } from './sync';
+import { listAnnotations } from './annotations';
+import { findContentGroup, groupRegexFilters, groupSql, type ContentGroup } from './contentgroups';
 
 export type Compare = 'previous' | 'yoy' | 'none';
 
@@ -17,6 +19,16 @@ export interface ReportArgs {
   brand?: 'branded' | 'nonbranded' | 'all';
   page?: string;
   query?: string;
+  /** Content group name or id (page-level filter). */
+  group?: string;
+  /** Resolved content group (set by withGroup). */
+  _group?: ContentGroup | null;
+}
+
+/** Resolves a.group once, so every report can filter by content group. */
+export async function withGroup<T extends ReportArgs>(env: Env, p: Property, a: T): Promise<T> {
+  if (a._group !== undefined || !a.group) return a;
+  return { ...a, _group: await findContentGroup(env, p, a.group) };
 }
 
 export interface Range {
@@ -113,6 +125,7 @@ function liveFilters(p: Property, a: ReportArgs): DimensionFilter[] {
   if (a.device) f.push({ dimension: 'device', operator: 'equals', expression: a.device.toUpperCase() });
   if (a.page) f.push({ dimension: 'page', operator: 'equals', expression: a.page });
   if (a.query) f.push({ dimension: 'query', operator: 'equals', expression: a.query });
+  if (a._group) f.push(...groupRegexFilters(a._group));
   if (a.brand && a.brand !== 'all') {
     const terms = brandTerms(p);
     if (!terms.length) throw new HttpError(400, 'No brand terms set for this property. Add them with update_property.');
@@ -172,10 +185,17 @@ function scopeFor(p: Property, r: Range, a: ReportArgs): Scope {
   const where = ['x.property_id = ?', 'x.search_type = ?'];
   const params: unknown[] = [p.id, r.searchType];
   let from: string;
-  if (a.page && (a.query || brand)) from = 'query_page_daily x';
-  else if (a.page) from = 'page_daily x';
-  else if (a.query || brand) from = 'query_daily x';
+  const pageLevel = a.page || a._group;
+  if (pageLevel && (a.query || brand)) from = a.page ? 'query_page_daily x INDEXED BY qpd_page' : 'query_page_daily x';
+  else if (pageLevel) from = a.page && !a._group ? 'page_daily x INDEXED BY page_daily_lookup' : 'page_daily x';
+  else if (a.query || brand) from = a.query ? 'query_daily x INDEXED BY query_daily_lookup' : 'query_daily x';
   else from = 'daily_totals x';
+  if (a._group) {
+    from += ' JOIN pages gp ON gp.id = x.page_id';
+    const g = groupSql(a._group, 'gp.url');
+    where.push(g.sql);
+    params.push(...g.params);
+  }
   if (a.page) {
     where.push('x.page_id = ?');
     params.push(pageId(p.id, a.page));
@@ -203,7 +223,18 @@ function dateCond(from: string, to: string, col = 'x.date') {
 
 export { dateCond, NEVER };
 
+/**
+ * Date filter covering the current and comparison windows. A single range lets SQLite
+ * use the (property, type, id, date) indexes; an OR of two ranges forces a scan.
+ */
+export function spanCond(r: { from: string; to: string; prevFrom: string | null; prevTo: string | null }, col = 'x.date') {
+  if (!r.prevFrom || !r.prevTo) return dateCond(r.from, r.to, col);
+  if (addDays(r.prevTo, 1) >= r.from) return dateCond(r.prevFrom < r.from ? r.prevFrom : r.from, r.to > r.prevTo ? r.to : r.prevTo, col);
+  return `((${dateCond(r.from, r.to, col)}) OR (${dateCond(r.prevFrom, r.prevTo, col)}))`;
+}
+
 export async function summary(env: Env, p: Property, a: ReportArgs) {
+  a = await withGroup(env, p, a);
   const r = await resolveRange(env, p, a);
   if (needsLive(a)) {
     const [cur, prev] = await Promise.all([
@@ -221,7 +252,7 @@ export async function summary(env: Env, p: Property, a: ReportArgs) {
   const row = await env.DB.prepare(
     `SELECT ${sum('clicks', cur)} AS c, ${sum('impressions', cur)} AS i, ${sum('pos_sum', cur)} AS ps,
        ${sum('clicks', prv)} AS pc, ${sum('impressions', prv)} AS pi, ${sum('pos_sum', prv)} AS pps
-     FROM ${s.from} WHERE ${s.where.join(' AND ')} AND ((${cur}) OR (${prv}))`,
+     FROM ${s.from} WHERE ${s.where.join(' AND ')} AND ${spanCond(r)}`,
   )
     .bind(...s.params)
     .first<Record<string, number>>();
@@ -235,12 +266,15 @@ export async function summary(env: Env, p: Property, a: ReportArgs) {
 }
 
 export async function timeseries(env: Env, p: Property, a: ReportArgs) {
+  a = await withGroup(env, p, a);
   const r = await resolveRange(env, p, { ...a, compare: 'none' }, true);
+  const annotations = await listAnnotations(env, p, r.from, r.to);
   if (needsLive(a)) {
     const rows = await liveRows(env, p, r, a, ['date']);
     return {
       property: p.site_url,
       range: rangeInfo(r),
+      annotations,
       source: 'live',
       rows: rows.map((x) => ({ date: x.keys![0], ...rowMetrics(x), provisional: false })),
     };
@@ -265,6 +299,7 @@ export async function timeseries(env: Env, p: Property, a: ReportArgs) {
   return {
     property: p.site_url,
     range: rangeInfo(r),
+      annotations,
     source: 'stored',
     rows: results.map((x) => ({ date: x.date, ...metrics(x.c, x.i, x.ps), provisional: Boolean(x.prov) || Boolean(provDates?.has(x.date)) })),
   };
@@ -315,6 +350,7 @@ function tableRow(kind: TableKind, label: string, cur: Metrics, prev: Metrics | 
 }
 
 export async function table(env: Env, p: Property, kind: TableKind, a: TableArgs) {
+  a = await withGroup(env, p, a);
   const r = await resolveRange(env, p, a);
   const limit = Math.min(Math.max(Number(a.limit) || 100, 1), 5000);
   const offset = Math.max(Number(a.offset) || 0, 0);
@@ -344,13 +380,23 @@ export async function table(env: Env, p: Property, kind: TableKind, a: TableArgs
 
   const idCol = kind === 'page' ? 'page_id' : 'query_id';
   const brand = brandClause(p, a, 'bq.text');
-  const crossFilter = (kind === 'page' && (a.query || brand)) || (kind === 'query' && a.page);
-  const src = crossFilter ? 'query_page_daily' : kind === 'page' ? 'page_daily' : 'query_daily';
+  const crossFilter = (kind === 'page' && (a.query || brand)) || (kind === 'query' && (a.page || a._group));
+  // Name the index for single-page / single-query lookups; the planner otherwise picks
+  // the GROUP BY column's index and scans every row of the property.
+  const src = crossFilter
+    ? kind === 'query' && a.page
+      ? 'query_page_daily INDEXED BY qpd_page'
+      : kind === 'page' && a.query
+        ? 'query_page_daily INDEXED BY qpd_query'
+        : 'query_page_daily'
+    : kind === 'page'
+      ? 'page_daily'
+      : 'query_daily';
   const label = kind === 'page' ? 'JOIN pages L ON L.id = x.page_id' : 'JOIN queries L ON L.id = x.query_id';
   const labelCol = kind === 'page' ? 'L.url' : 'L.text';
 
-  const where = ['x.property_id = ?', 'x.search_type = ?', '((x.date >= ? AND x.date <= ?) OR (x.date >= ? AND x.date <= ?))'];
-  const params: unknown[] = [p.id, r.searchType, r.from, r.to, r.prevFrom || NEVER, r.prevTo || NEVER];
+  const where = ['x.property_id = ?', 'x.search_type = ?', spanCond(r)];
+  const params: unknown[] = [p.id, r.searchType];
   let joins = label;
   if (a.page && kind === 'query') {
     where.push('x.page_id = ?');
@@ -369,6 +415,18 @@ export async function table(env: Env, p: Property, kind: TableKind, a: TableArgs
     }
     params.push(...brand.params);
   }
+  if (a._group) {
+    if (kind === 'page') {
+      const g = groupSql(a._group, 'L.url');
+      where.push(g.sql);
+      params.push(...g.params);
+    } else {
+      joins += ' JOIN pages gp ON gp.id = x.page_id';
+      const g = groupSql(a._group, 'gp.url');
+      where.push(g.sql);
+      params.push(...g.params);
+    }
+  }
   if (a.contains) {
     where.push(`${labelCol} LIKE ? ESCAPE '\\'`);
     params.push(likeContains(a.contains));
@@ -385,7 +443,7 @@ export async function table(env: Env, p: Property, kind: TableKind, a: TableArgs
         SUM(CASE WHEN ${prv} THEN x.clicks ELSE 0 END) AS p_clicks,
         SUM(CASE WHEN ${prv} THEN x.impressions ELSE 0 END) AS p_impressions,
         SUM(CASE WHEN ${prv} THEN x.pos_sum ELSE 0 END) AS p_pos_sum
-      FROM ${src} x ${joins}
+      FROM ${src.includes(' INDEXED BY ') ? src.replace(' INDEXED BY ', ' x INDEXED BY ') : src + ' x'} ${joins}
       WHERE ${where.join(' AND ')}
       GROUP BY x.${idCol}
     ) WHERE impressions >= ${minImpr}
@@ -406,9 +464,10 @@ export async function table(env: Env, p: Property, kind: TableKind, a: TableArgs
 export type BreakdownDim = 'country' | 'device' | 'searchAppearance';
 
 export async function breakdown(env: Env, p: Property, dim: BreakdownDim, a: ReportArgs) {
+  a = await withGroup(env, p, a);
   if (!['country', 'device', 'searchAppearance'].includes(dim)) throw new HttpError(400, 'dimension must be country, device or searchAppearance');
   const r = await resolveRange(env, p, a);
-  if (needsLive(a) || a.page || a.query || (a.brand && a.brand !== 'all')) {
+  if (needsLive(a) || a.page || a.query || a._group || (a.brand && a.brand !== 'all')) {
     const [cur, prev] = await Promise.all([
       liveRows(env, p, r, a, [dim]),
       r.prevFrom ? liveRows(env, p, r, a, [dim], true) : Promise.resolve([]),
@@ -458,7 +517,7 @@ export async function pageDetail(env: Env, p: Property, url: string, a: ReportAr
     summary(env, p, args),
     timeseries(env, p, { ...args, days: Math.max(Number(a.days) || 90, 28) }),
     table(env, p, 'query', { ...args, limit: 100 }),
-    env.DB.prepare('SELECT MIN(date) AS d FROM page_daily WHERE property_id = ? AND page_id = ?').bind(p.id, id).first<{ d: string | null }>(),
+    env.DB.prepare("SELECT MIN(date) AS d FROM page_daily INDEXED BY page_daily_lookup WHERE property_id = ? AND search_type = 'web' AND page_id = ?").bind(p.id, id).first<{ d: string | null }>(),
     env.DB.prepare('SELECT * FROM url_inspections WHERE property_id = ? AND page_id = ?').bind(p.id, id).first(),
   ]);
   const buckets = { top3: 0, top10: 0, top20: 0, beyond: 0 };
@@ -475,6 +534,7 @@ export async function pageDetail(env: Env, p: Property, url: string, a: ReportAr
     summary: sum,
     position_buckets: buckets,
     timeseries: series.rows,
+    annotations: series.annotations,
     queries: queries.rows,
     inspection: inspection ?? null,
   };
@@ -494,6 +554,7 @@ export async function queryDetail(env: Env, p: Property, q: string, a: ReportArg
     query: q,
     summary: sum,
     timeseries: series.rows,
+    annotations: series.annotations,
     pages: pages.rows.map((x) => ({ ...x, impression_share: total ? round((Number(x.impressions) / total) * 100, 1) : null })),
     cannibalization: competing.length >= 2,
   };

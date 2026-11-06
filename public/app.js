@@ -41,7 +41,7 @@ async function api(path, params = {}, opts = {}, attempt = 0) {
 // ---------- routing ----------
 
 const state = { properties: [], me: null };
-const FILTER_KEYS = ['days', 'compare', 'search_type', 'device', 'country', 'brand'];
+const FILTER_KEYS = ['days', 'compare', 'search_type', 'device', 'country', 'brand', 'group'];
 
 function parseHash() {
   const raw = location.hash.slice(1) || '/';
@@ -78,6 +78,8 @@ function renderSidebar(pid, section) {
   const item = (url, icon, label, active) =>
     `<li class="nav-item"><a class="nav-link ${active ? 'active' : ''}" href="${url}" ${active ? 'aria-current="page"' : ''}><span class="nav-link-icon d-md-none d-lg-inline-block">${I[icon]}</span><span class="nav-link-title">${label}</span></a></li>`;
   let nav = item('#/', 'home', 'All properties', !pid && section === 'home');
+  const open = state.openAlerts || 0;
+  nav += `<li class="nav-item"><a class="nav-link ${section === 'alerts' ? 'active' : ''}" href="#/alerts" ${section === 'alerts' ? 'aria-current="page"' : ''}><span class="nav-link-icon d-md-none d-lg-inline-block">${I.bell}</span><span class="nav-link-title">Alerts</span>${open ? `<span class="badge badge-soft-bad ms-auto" aria-label="${open} open alerts">${open}</span>` : ''}</a></li>`;
   if (pid) {
     nav += [
       ['', 'chart-line', 'Overview'],
@@ -85,6 +87,7 @@ function renderSidebar(pid, section) {
       ['queries', 'search', 'Queries'],
       ['insights', 'bulb', 'Insights'],
       ['groups', 'target-arrow', 'Keywords'],
+      ['content-groups', 'folders', 'Content groups'],
       ['indexing', 'world-search', 'Indexing'],
     ]
       .map(([s, icon, label]) => item(href(`/p/${pid}${s ? '/' + s : ''}`), icon, label, section === s))
@@ -115,6 +118,7 @@ function filterBar() {
     ${sel('device', 'Device', [['', 'All devices'], ['DESKTOP', 'Desktop'], ['MOBILE', 'Mobile'], ['TABLET', 'Tablet']])}
     <div class="col-6 col-sm-auto"><label class="form-label mb-1" for="f-country">Country</label><input class="form-control" id="f-country" name="country" size="6" placeholder="usa" value="${esc(f.country || '')}" pattern="[a-zA-Z]{3}" title="3-letter code, e.g. usa, ind"></div>
     ${sel('brand', 'Queries', [['', 'All queries'], ['branded', 'Branded'], ['nonbranded', 'Non-branded']])}
+    ${state.groups?.length ? sel('group', 'Content group', [['', 'All pages'], ...state.groups.map((g) => [g.name, esc(g.name)])]) : ''}
   </form>`;
 }
 
@@ -156,6 +160,10 @@ async function route() {
   destroyCharts();
   view.innerHTML = `<div class="page-body"><div class="container-xl"><div class="text-secondary py-5 text-center">Loading…</div></div></div>`;
   try {
+    if (parts[0] === 'alerts') {
+      renderSidebar('', 'alerts');
+      return await alertsView(parts[1] || 'open');
+    }
     if (parts[0] === 'settings') {
       renderSidebar('', 'settings');
       return await settingsView();
@@ -163,6 +171,7 @@ async function route() {
     if (parts[0] === 'p' && parts[1]) {
       const pid = parts[1];
       const section = parts[2] || '';
+      await loadGroups(pid);
       renderSidebar(pid, section === 'page' ? 'pages' : section === 'query' ? 'queries' : section);
       const f = { property: pid, ...filtersFrom(q) };
       switch (section) {
@@ -186,6 +195,9 @@ async function route() {
           break;
         case 'groups':
           await (parts[3] ? groupView(pid, decodeURIComponent(parts[3]), f) : groupsView(pid));
+          break;
+        case 'content-groups':
+          await contentGroupsView(pid, f);
           break;
         case 'indexing':
           await indexingView(pid);
@@ -211,7 +223,7 @@ function destroyCharts() {
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const isDark = () => document.documentElement.getAttribute('data-bs-theme') === 'dark';
 
-function trendChart(el, rows) {
+function trendChart(el, rows, notes = [], pid = null) {
   if (!el) return;
   if (!rows.length) {
     el.innerHTML = empty('No daily data yet', 'The first sync can take a few minutes after a property is added.');
@@ -240,9 +252,11 @@ function trendChart(el, rows) {
     ],
     legend: { position: 'top', horizontalAlign: 'left', labels: { colors: cssVar('--gt-ink') }, fontSize: '14px' },
     tooltip: { shared: true, x: { format: 'ddd d MMM yyyy' }, theme: isDark() ? 'dark' : 'light' },
+    annotations: { xaxis: chartAnnotations(notes, rows) },
   });
   chart.render();
   charts.push(chart);
+  if (pid !== null) el.insertAdjacentHTML('afterend', annotationStrip(notes, pid));
   const prov = rows.filter((r) => r.provisional).length;
   if (prov) el.insertAdjacentHTML('afterend', `<div class="text-secondary small px-3 pb-3">The last ${prov} day${prov > 1 ? 's are' : ' is'} provisional and may still change.</div>`);
 }
@@ -392,7 +406,8 @@ async function overviewView(pid, f) {
       <div class="col-lg-6">${card('Countries', table([{ key: 'country', label: 'Country', fmt: (v) => esc(String(v).toUpperCase()) }, ...metricCols(hp, ['clicks', 'delta_clicks', 'impressions', 'position'])], countries.rows.slice(0, 10)), { flush: true })}</div>
     </div>`,
   );
-  trendChart($('#chart'), t.rows);
+  trendChart($('#chart'), t.rows, t.annotations || [], pid);
+  bindAnnotationForm(pid);
 }
 
 async function tableView(pid, kind, f, q) {
@@ -477,7 +492,7 @@ async function pageView(pid, url, f) {
       <div class="col-lg-4">${card('Index status', `<div id="ins">${inspectionGrid(d.inspection)}</div>`)}</div>
     </div>`,
   );
-  trendChart($('#chart'), d.timeseries);
+  trendChart($('#chart'), d.timeseries, d.annotations || []);
   $('#inspect').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -506,7 +521,7 @@ async function queryView(pid, query, f) {
         ${card('Ranking pages', table([pageCol(pid), shareCol, ...metricCols(false)], d.pages), { flush: true })}</div>
     </div>`,
   );
-  trendChart($('#chart'), d.timeseries);
+  trendChart($('#chart'), d.timeseries, d.annotations || []);
 }
 
 const INSIGHT_TABS = [
@@ -991,6 +1006,7 @@ async function settingsView() {
           <div class="col-md-3"><label class="form-label" for="e-types">Search types</label><input class="form-control" id="e-types" name="search_types" value="${esc(p.search_types.join(', '))}"><div class="form-hint">web, image, video, news, discover, googleNews</div></div>
           <div class="col-md-3"><label class="form-label" for="e-budget">Inspections per day</label><input class="form-control" id="e-budget" name="inspection_budget" type="number" min="0" max="1900" value="${p.inspection_budget}"></div>
           <div class="col-md-3"><label class="form-label" for="e-active">Status</label><select class="form-select" id="e-active" name="active"><option value="true" ${p.active ? 'selected' : ''}>Active</option><option value="false" ${p.active ? '' : 'selected'}>Paused</option></select></div>
+          <div class="col-12"><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="show_google_updates" ${p.show_google_updates !== false ? 'checked' : ''}><span class="form-check-label">Show confirmed Google ranking updates on this property's charts</span></label></div>
           <div class="col-12"><label class="form-label" for="e-brand">Brand terms</label><input class="form-control" id="e-brand" name="brand_terms" value="${esc(p.brand_terms.join(', '))}"><div class="form-hint">Comma-separated. A query that contains any of them counts as branded.</div></div>
         </div>
         <div class="mt-3"><button class="btn btn-primary" type="submit">Save</button> <span id="editmsg" class="ms-2"></span></div></form>`;
@@ -1007,6 +1023,7 @@ async function settingsView() {
               brand_terms: fd.brand_terms.split(',').map((s) => s.trim()).filter(Boolean),
               inspection_budget: Number(fd.inspection_budget),
               active: fd.active === 'true',
+              show_google_updates: fd.show_google_updates === 'on',
             },
           });
           await loadProperties();
@@ -1059,6 +1076,393 @@ async function settingsView() {
   });
 }
 
+// ---------- content groups ----------
+
+async function loadGroups(pid) {
+  if (state.groupsFor === pid) return;
+  try {
+    state.groups = (await api(`/p/${pid}/content-groups`, { names_only: 'true' })).groups;
+  } catch {
+    state.groups = [];
+  }
+  state.groupsFor = pid;
+}
+
+async function contentGroupsView(pid, f) {
+  const d = await api(`/p/${pid}/content-groups`, f);
+  const rows = d.groups.map((g) => ({ ...g, delta_clicks: g.delta?.clicks ?? null, delta_position: g.delta?.position ?? null }));
+  view.innerHTML = page(
+    { title: 'Content groups', subtitle: 'Sections of the site defined by URL patterns. Pick one in the filter bar to limit any report to it.', filters: true },
+    `<div class="row row-cards">
+      <div class="col-lg-8">${card(
+        'Groups',
+        table(
+          [
+            { key: 'name', label: 'Group', link: (r) => href(`/p/${pid}/pages`, { group: r.name }) },
+            { key: 'pages', label: 'Pages', num: true, fmt },
+            { key: 'clicks', label: 'Clicks', num: true, fmt },
+            { key: 'delta_clicks', label: 'Change', num: true, fmt: (v) => delta(v) },
+            { key: 'impressions', label: 'Impressions', num: true, fmt },
+            { key: 'position', label: 'Position', num: true },
+            { key: 'delta_position', label: 'Pos. change', num: true, fmt: (v) => delta(v, { invert: true }) },
+            { key: 'id', label: '<span class="visually-hidden">Actions</span>', num: true, fmt: (v, r) => `<div class="btn-list justify-content-end flex-nowrap"><button class="btn btn-sm" data-edit-group="${esc(r.name)}">Edit</button><button class="btn btn-sm btn-icon" data-del-group="${esc(r.name)}" aria-label="Delete ${esc(r.name)}">${I.trash}</button></div>` },
+          ],
+          rows,
+          null,
+          ['No content groups yet', 'Create one with URL patterns like /blog/ or /docs/*.'],
+        ),
+        { flush: true },
+      )}</div>
+      <div class="col-lg-4">${card(
+        'New or edit group',
+        `<form id="cgf">
+          <div class="mb-3"><label class="form-label" for="cg-name">Name</label><input class="form-control" id="cg-name" name="name" required maxlength="60" placeholder="Blog"></div>
+          <div class="mb-3"><label class="form-label" for="cg-inc">Include, one pattern per line</label><textarea class="form-control font-monospace" id="cg-inc" name="include" rows="3" required placeholder="/blog/"></textarea>
+            <div class="form-hint"><code>/blog/</code> starts with · <code>/docs/*/api</code> wildcard · <code>pricing</code> anywhere in the path</div></div>
+          <div class="mb-3"><label class="form-label" for="cg-exc">Exclude (optional)</label><textarea class="form-control font-monospace" id="cg-exc" name="exclude" rows="2" placeholder="/blog/tag/"></textarea></div>
+          <div class="btn-list"><button class="btn" type="button" id="cg-preview">${I.search} Preview</button><button class="btn btn-primary" type="submit">Save group</button></div>
+          <div id="cgmsg" class="mt-3"></div>
+        </form>`,
+      )}</div>
+    </div>`,
+  );
+  const lines = (v) => String(v || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  const form = $('#cgf');
+  $('#cg-preview').addEventListener('click', async () => {
+    try {
+      const r = await api(`/p/${pid}/content-groups/preview`, {}, { method: 'POST', body: { include: lines(form.include.value), exclude: lines(form.exclude.value) } });
+      $('#cgmsg').innerHTML = alertBox('info', `<strong>${fmt(r.matching_pages)}</strong> stored pages match.${r.sample.length ? `<ul class="mb-0 mt-2">${r.sample.slice(0, 8).map((u) => `<li class="url">${esc(shortUrl(u))}</li>`).join('')}</ul>` : ''}`);
+    } catch (err) {
+      $('#cgmsg').innerHTML = alertBox('danger', esc(err.message));
+    }
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api(`/p/${pid}/content-groups`, {}, { method: 'POST', body: { name: form.name.value, include: lines(form.include.value), exclude: lines(form.exclude.value) } });
+      state.groupsFor = null;
+      $('#cgmsg').innerHTML = alertBox('success', `Saved ${esc(r.group.name)}: ${fmt(r.matching_pages)} pages.`);
+      setTimeout(route, 700);
+    } catch (err) {
+      $('#cgmsg').innerHTML = alertBox('danger', esc(err.message));
+    }
+  });
+  view.querySelectorAll('[data-edit-group]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const g = d.groups.find((x) => x.name === b.dataset.editGroup);
+      form.name.value = g.name;
+      form.include.value = g.include.join('\n');
+      form.exclude.value = g.exclude.join('\n');
+      form.name.focus();
+    }),
+  );
+  view.querySelectorAll('[data-del-group]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!confirm(`Delete the content group "${b.dataset.delGroup}"? Search data stays.`)) return;
+      await api(`/p/${pid}/content-groups/${encodeURIComponent(b.dataset.delGroup)}`, {}, { method: 'DELETE' });
+      state.groupsFor = null;
+      route();
+    }),
+  );
+}
+
+// ---------- annotations ----------
+
+const NOTE_LABEL = { note: 'Note', release: 'Release', content: 'Content', technical: 'Technical', incident: 'Incident', google: 'Google update' };
+
+function chartAnnotations(notes, rows) {
+  if (!notes?.length || !rows.length) return [];
+  const first = Date.parse(rows[0].date);
+  const last = Date.parse(rows[rows.length - 1].date);
+  const accent = cssVar('--gt-accent');
+  const s2 = cssVar('--gt-series-2');
+  const ink = cssVar('--gt-ink');
+  return notes.map((n) => {
+    const x = Math.max(Date.parse(n.date), first);
+    const x2 = n.end_date ? Math.min(Date.parse(n.end_date), last) : null;
+    const google = n.category === 'google';
+    const color = google ? s2 : accent;
+    return {
+      x,
+      ...(x2 && x2 > x ? { x2, fillColor: color, opacity: 0.08 } : {}),
+      borderColor: color,
+      strokeDashArray: google ? 0 : 4,
+      label: {
+        text: n.title.length > 26 ? n.title.slice(0, 25) + '…' : n.title,
+        orientation: 'horizontal',
+        textAnchor: 'start',
+        offsetX: 2,
+        borderColor: color,
+        style: { color: ink, background: isDark() ? '#1c1b19' : '#ffffff', fontSize: '12px', fontWeight: 500 },
+      },
+    };
+  });
+}
+
+function annotationStrip(notes, pid) {
+  const items = notes
+    .map(
+      (n) =>
+        `<li class="d-flex align-items-center gap-2 py-1"><span class="badge ${n.category === 'google' ? 'badge-soft' : 'badge-note'}">${esc(NOTE_LABEL[n.category] || n.category)}</span>
+        <span class="text-secondary">${esc(n.date)}${n.end_date ? ` to ${esc(n.end_date)}` : ''}</span>
+        ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>` : `<span>${esc(n.title)}</span>`}
+        ${n.source === 'manual' ? `<button class="btn btn-sm btn-icon ms-auto" type="button" data-del-note="${n.id}" aria-label="Delete note">${I.trash}</button>` : ''}</li>`,
+    )
+    .join('');
+  return `<div class="border-top pt-3 mt-2" id="notes">
+    ${items ? `<ul class="list-unstyled mb-3">${items}</ul>` : '<p class="text-secondary mb-3">No annotations in this range.</p>'}
+    <details><summary class="text-secondary">${I.note} Add an annotation</summary>
+      <form class="row g-2 align-items-end mt-1" id="nf">
+        <div class="col-sm-3"><label class="form-label" for="n-date">Date</label><input class="form-control" type="date" id="n-date" name="date" required></div>
+        <div class="col-sm-3"><label class="form-label" for="n-end">End date (optional)</label><input class="form-control" type="date" id="n-end" name="end_date"></div>
+        <div class="col-sm-6"><label class="form-label" for="n-title">What happened</label><input class="form-control" id="n-title" name="title" required maxlength="120" placeholder="Redesigned the pricing page"></div>
+        <div class="col-sm-3"><label class="form-label" for="n-cat">Type</label><select class="form-select" id="n-cat" name="category"><option value="note">Note</option><option value="release">Release</option><option value="content">Content</option><option value="technical">Technical</option><option value="incident">Incident</option></select></div>
+        <div class="col-sm-5"><label class="form-check mt-4"><input class="form-check-input" type="checkbox" name="all"><span class="form-check-label">Applies to all properties</span></label></div>
+        <div class="col-sm-4 text-sm-end"><button class="btn btn-primary" type="submit">${I.plus} Add</button></div>
+      </form><div id="nmsg" class="mt-2"></div></details>
+  </div>`;
+}
+
+function bindAnnotationForm(pid) {
+  const f = $('#nf');
+  if (f) {
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('/annotations', {}, { method: 'POST', body: { property: f.all.checked ? undefined : pid, date: f.date.value, end_date: f.end_date.value || undefined, title: f.title.value, category: f.category.value } });
+        route();
+      } catch (err) {
+        $('#nmsg').innerHTML = alertBox('danger', esc(err.message));
+      }
+    });
+  }
+  view.querySelectorAll('[data-del-note]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!confirm('Delete this annotation?')) return;
+      await api(`/annotations/${b.dataset.delNote}`, {}, { method: 'DELETE' });
+      route();
+    }),
+  );
+}
+
+// ---------- alerts ----------
+
+async function refreshAlertCount() {
+  try {
+    state.openAlerts = (await api('/alerts', { status: 'open', limit: 1 })).open_count;
+  } catch {
+    state.openAlerts = 0;
+  }
+}
+
+const SEV = { critical: 'badge-soft-bad', warning: 'badge-soft-warn', info: 'badge-soft' };
+
+async function alertsView(tab) {
+  const [list, rules, chans] = await Promise.all([
+    api('/alerts', { status: tab === 'all' ? 'all' : 'open', limit: 200 }),
+    api('/alerts/rules'),
+    api('/alert-channels').catch(() => ({ channels: [], email_configured: false })),
+  ]);
+  state.openAlerts = list.open_count;
+  renderSidebar('', 'alerts');
+  const chanName = (id) => chans.channels.find((c) => c.id === id)?.name || `#${id}`;
+  const tabs = `<ul class="nav nav-tabs card-header-tabs">${[
+    ['open', `Open${list.open_count ? ` (${list.open_count})` : ''}`],
+    ['all', 'History'],
+    ['rules', 'Rules'],
+    ['channels', 'Channels'],
+  ]
+    .map(([k, l]) => `<li class="nav-item"><a class="nav-link ${tab === k ? 'active' : ''}" href="#/alerts/${k}" ${tab === k ? 'aria-current="page"' : ''}>${l}</a></li>`)
+    .join('')}</ul>`;
+  let body = '';
+  if (tab === 'open' || tab === 'all') {
+    body = table(
+      [
+        { key: 'severity', label: 'Severity', fmt: (v) => `<span class="badge ${SEV[v] || 'badge-soft'}">${esc(v)}</span>` },
+        { key: 'property', label: 'Property', fmt: (v) => esc(v || '–') },
+        { key: 'title', label: 'Alert', fmt: (v, r) => (r.link ? `<a href="${esc(r.link.replace(/^https?:\/\/[^/#]+/, ''))}">${esc(v)}</a>` : esc(v)) },
+        { key: 'created_at', label: 'When', fmt: (v) => esc(String(v).slice(0, 16).replace('T', ' ')) },
+        { key: 'status', label: 'Status', fmt: (v, r) => (v === 'open' ? `<button class="btn btn-sm" data-ack="${r.id}">${I.check} Acknowledge</button>` : `<span class="text-secondary">${esc(v)}</span>`) },
+      ],
+      list.alerts,
+      null,
+      tab === 'open' ? ['Nothing needs attention', 'New alerts show up here after the daily check (05:30 UTC) or when you run it now.'] : ['No alerts yet', 'Add a rule to start watching.'],
+    );
+  } else if (tab === 'rules') {
+    const kinds = rules.kinds;
+    body =
+      table(
+        [
+          { key: 'label', label: 'Rule' },
+          { key: 'property_id', label: 'Property', fmt: (v) => esc(v ? propLabel(v) : 'All properties') },
+          { key: 'threshold', label: 'Threshold', num: true, fmt: (v, r) => (v === null ? '–' : `${v}${r.unit === '%' ? '%' : ` ${esc(r.unit)}`}`) },
+          { key: 'params', label: 'Options', fmt: (v) => esc([v.min_clicks !== undefined ? `min ${v.min_clicks} clicks` : '', v.group ? `group ${v.group}` : ''].filter(Boolean).join(', ') || '–') },
+          { key: 'channels', label: 'Sends to', fmt: (v) => (v.length ? v.map((id) => `<span class="badge badge-soft me-1">${esc(chanName(id))}</span>`).join('') : '<span class="text-secondary">Dashboard only</span>') },
+          { key: 'enabled', label: 'On', fmt: (v) => (v ? '<span class="badge badge-soft-good">On</span>' : '<span class="badge badge-soft">Off</span>') },
+          { key: 'id', label: '<span class="visually-hidden">Actions</span>', num: true, fmt: (v) => `<button class="btn btn-sm btn-icon" data-del-rule="${v}" aria-label="Delete rule">${I.trash}</button>` },
+        ],
+        rules.rules,
+        null,
+        ['No rules yet', 'Start with "Site clicks dropped" on all properties.'],
+      ) +
+      `<div class="card-footer"><form class="row g-2 align-items-end" id="rf">
+        <div class="col-md-4"><label class="form-label" for="r-kind">When</label><select class="form-select" id="r-kind" name="kind">${Object.entries(kinds).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select></div>
+        <div class="col-md-3"><label class="form-label" for="r-prop">Property</label><select class="form-select" id="r-prop" name="property"><option value="">All properties</option>${state.properties.map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('')}</select></div>
+        <div class="col-md-2" id="r-thr-wrap"><label class="form-label" for="r-thr">Threshold <span id="r-unit" class="text-secondary"></span></label><input class="form-control" type="number" step="0.5" min="0.5" id="r-thr" name="threshold"></div>
+        <div class="col-md-3"><label class="form-label" for="r-min">Min clicks (optional)</label><input class="form-control" type="number" min="0" id="r-min" name="min_clicks"></div>
+        <div class="col-md-4" id="r-group-wrap" hidden><label class="form-label" for="r-group">Keyword group</label><input class="form-control" id="r-group" name="group" placeholder="Group name"></div>
+        <div class="col-12"><div class="form-label">Send to</div>${chans.channels.length ? chans.channels.map((c) => `<label class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="channels" value="${c.id}"><span class="form-check-label">${esc(c.name)} (${esc(c.kind)})</span></label>`).join('') : '<span class="text-secondary">No channels yet. Alerts still show here. <a href="#/alerts/channels">Add a channel</a>.</span>'}</div>
+        <div class="col-12"><p class="form-hint m-0" id="r-help"></p></div>
+        <div class="col-12"><button class="btn btn-primary" type="submit">${I.plus} Add rule</button> <span id="rmsg" class="ms-2"></span></div>
+      </form></div>`;
+  } else {
+    body =
+      table(
+        [
+          { key: 'name', label: 'Name' },
+          { key: 'kind', label: 'Type', fmt: (v) => `<span class="badge badge-soft">${esc(v)}</span>` },
+          { key: 'target_hint', label: 'Destination', fmt: (v) => `<code>${esc(v)}</code>` },
+          { key: 'last_sent_at', label: 'Last sent', fmt: (v, r) => (r.last_error ? `<span class="t-bad" title="${esc(r.last_error)}">Failing</span>` : esc(v ? String(v).slice(0, 16).replace('T', ' ') : 'Never')) },
+          { key: 'id', label: '<span class="visually-hidden">Actions</span>', num: true, fmt: (v) => `<div class="btn-list justify-content-end flex-nowrap"><button class="btn btn-sm" data-test-chan="${v}">${I.send} Test</button><button class="btn btn-sm btn-icon" data-del-chan="${v}" aria-label="Delete channel">${I.trash}</button></div>` },
+        ],
+        chans.channels,
+        null,
+        ['No channels yet', 'Add Slack, Discord, Teams, email or a webhook below.'],
+      ) +
+      `<div class="card-footer"><form class="row g-2 align-items-end" id="chf">
+        <div class="col-md-2"><label class="form-label" for="c-kind">Type</label><select class="form-select" id="c-kind" name="kind"><option value="slack">Slack</option><option value="discord">Discord</option><option value="teams">Microsoft Teams</option><option value="webhook">Webhook</option><option value="email" ${chans.email_configured ? '' : 'disabled'}>Email${chans.email_configured ? '' : ' (configure email first)'}</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="c-name">Name</label><input class="form-control" id="c-name" name="name" maxlength="60" placeholder="#seo-alerts"></div>
+        <div class="col-md-5"><label class="form-label" for="c-target" id="c-target-label">Webhook URL</label><input class="form-control" id="c-target" name="target" required autocomplete="off" placeholder="https://hooks.slack.com/services/…"></div>
+        <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">${I.plus} Add</button></div>
+        <div class="col-12"><p class="form-hint m-0" id="c-help"></p></div>
+      </form><div id="cmsg" class="mt-2"></div></div>`;
+  }
+  view.innerHTML = page(
+    {
+      title: 'Alerts',
+      subtitle: 'Checked daily at 05:30 UTC against final data. Each problem is reported once.',
+      actions: `<button class="btn" id="runchecks">${I.refresh} Run checks now</button>${list.open_count ? `<button class="btn" id="ackall">${I.check} Acknowledge all</button>` : ''}`,
+    },
+    `<div class="card"><div class="card-header">${tabs}</div>${body}</div><div id="amsg" class="mt-3"></div>`,
+  );
+
+  $('#runchecks').addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.classList.add('btn-loading');
+    try {
+      const r = await api('/alerts/run', {}, { method: 'POST', body: {} });
+      $('#amsg').innerHTML = alertBox(r.errors.length ? 'warning' : 'success', `Checked ${fmt(r.rules)} rule${r.rules === 1 ? '' : 's'}: ${fmt(r.new_alerts)} new alert${r.new_alerts === 1 ? '' : 's'}.${r.errors.length ? ' ' + esc(r.errors.join('; ')) : ''}`);
+      setTimeout(route, 1200);
+    } catch (err) {
+      $('#amsg').innerHTML = alertBox('danger', esc(err.message));
+    } finally {
+      b.disabled = false;
+      b.classList.remove('btn-loading');
+    }
+  });
+  $('#ackall')?.addEventListener('click', async () => {
+    await api('/alerts/acknowledge', {}, { method: 'POST', body: { all: true } });
+    route();
+  });
+  view.querySelectorAll('[data-ack]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await api('/alerts/acknowledge', {}, { method: 'POST', body: { ids: [b.dataset.ack] } });
+      route();
+    }),
+  );
+
+  const rf = $('#rf');
+  if (rf) {
+    const sync = () => {
+      const k = rules.kinds[rf.kind.value];
+      $('#r-help').textContent = k.help;
+      $('#r-thr-wrap').hidden = k.threshold === null;
+      rf.threshold.value = k.threshold ?? '';
+      $('#r-unit').textContent = k.unit ? `(${k.unit})` : '';
+      $('#r-group-wrap').hidden = rf.kind.value !== 'keyword_group_drop';
+    };
+    rf.kind.addEventListener('change', sync);
+    sync();
+    rf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const channels = [...rf.querySelectorAll('input[name=channels]:checked')].map((x) => x.value);
+      try {
+        await api('/alerts/rules', {}, {
+          method: 'POST',
+          body: {
+            kind: rf.kind.value,
+            property: rf.property.value || undefined,
+            threshold: rf.threshold.value ? Number(rf.threshold.value) : undefined,
+            min_clicks: rf.min_clicks.value ? Number(rf.min_clicks.value) : undefined,
+            group: rf.group.value || undefined,
+            channels,
+          },
+        });
+        route();
+      } catch (err) {
+        $('#rmsg').innerHTML = `<span class="t-bad">${esc(err.message)}</span>`;
+      }
+    });
+  }
+  view.querySelectorAll('[data-del-rule]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!confirm('Delete this rule? Past alerts stay.')) return;
+      await api(`/alerts/rules/${b.dataset.delRule}`, {}, { method: 'DELETE' });
+      route();
+    }),
+  );
+
+  const chf = $('#chf');
+  if (chf) {
+    const HELP = {
+      slack: ['Webhook URL', 'https://hooks.slack.com/services/…', 'In Slack: Apps → Incoming Webhooks → Add to a channel, then copy the URL.'],
+      discord: ['Webhook URL', 'https://discord.com/api/webhooks/…', 'In Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL.'],
+      teams: ['Workflow URL', 'https://…', 'In Teams: the channel ⋯ menu → Workflows → "Post to a channel when a webhook request is received", then copy the URL.'],
+      webhook: ['URL', 'https://example.com/hooks/scry', 'Receives JSON. Each request is signed: X-Scry-Signature = sha256 HMAC of "timestamp.body" with your signing secret (shown once after you add it).'],
+      email: ['Email addresses', 'you@example.com, team@example.com', 'Sent through the email provider configured for the weekly digest.'],
+    };
+    const sync = () => {
+      const [label, ph, help] = HELP[chf.kind.value];
+      $('#c-target-label').textContent = label;
+      chf.target.placeholder = ph;
+      chf.target.type = chf.kind.value === 'email' ? 'text' : 'url';
+      $('#c-help').textContent = help;
+    };
+    chf.kind.addEventListener('change', sync);
+    sync();
+    chf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const r = await api('/alert-channels', {}, { method: 'POST', body: { kind: chf.kind.value, name: chf.name.value, target: chf.target.value } });
+        if (r.signing_secret) {
+          $('#cmsg').innerHTML = `${alertBox('warning', '<strong>Copy this signing secret now.</strong> It is shown only once.')}<div class="input-group"><input class="form-control font-monospace" readonly value="${esc(r.signing_secret)}" aria-label="Webhook signing secret"><button class="btn" type="button" id="sc">${I.copy} Copy</button></div>`;
+          $('#sc').addEventListener('click', () => navigator.clipboard.writeText(r.signing_secret));
+        } else route();
+      } catch (err) {
+        $('#cmsg').innerHTML = alertBox('danger', esc(err.message));
+      }
+    });
+  }
+  view.querySelectorAll('[data-test-chan]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      try {
+        await api(`/alert-channels/${b.dataset.testChan}/test`, {}, { method: 'POST', body: {} });
+        $('#amsg').innerHTML = alertBox('success', 'Test sent. Check the destination.');
+      } catch (err) {
+        $('#amsg').innerHTML = alertBox('danger', esc(err.message));
+      }
+    }),
+  );
+  view.querySelectorAll('[data-del-chan]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!confirm('Delete this channel? Rules stop sending to it.')) return;
+      await api(`/alert-channels/${b.dataset.delChan}`, {}, { method: 'DELETE' });
+      route();
+    }),
+  );
+}
+
 // ---------- branding ----------
 
 function applyBrand(b) {
@@ -1107,7 +1511,7 @@ async function boot() {
   try {
     state.me = await api('/me');
     applyBrand(state.me.brand);
-    await loadProperties();
+    await Promise.all([loadProperties(), refreshAlertCount()]);
   } catch (e) {
     view.innerHTML = page({ title: 'Can’t load the dashboard' }, alertBox('danger', esc(e.message)));
     return;

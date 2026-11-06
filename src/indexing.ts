@@ -152,7 +152,7 @@ export async function indexingReport(env: Env, propertyId: number, limit = 200) 
     `SELECT ui.url, ui.verdict, ui.coverage_state, ui.indexing_state, ui.page_fetch_state, ui.robots_state,
             ui.last_crawl_time, ui.google_canonical, ui.user_canonical, ui.checked_at, ui.changed_at,
             ui.prev_coverage_state, ui.inspection_link,
-            (SELECT SUM(clicks) FROM page_daily d WHERE d.property_id = ui.property_id AND d.page_id = ui.page_id AND d.date >= ?) AS clicks_30d
+            (SELECT SUM(clicks) FROM page_daily d INDEXED BY page_daily_lookup WHERE d.property_id = ui.property_id AND d.search_type = 'web' AND d.page_id = ui.page_id AND d.date >= ?) AS clicks_30d
      FROM url_inspections ui
      WHERE ui.property_id = ? AND (ui.verdict IS NOT 'PASS'
         OR (ui.google_canonical IS NOT NULL AND ui.user_canonical IS NOT NULL AND ui.google_canonical <> ui.user_canonical))

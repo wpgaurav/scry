@@ -1,6 +1,6 @@
 import { HttpError, type Env, type Property } from './env';
 import { bestPages } from './insights';
-import { dateCond, metrics, NEVER, resolveRange, type ReportArgs } from './reports';
+import { dateCond, metrics, NEVER, resolveRange, spanCond, type ReportArgs } from './reports';
 import { queryId, round } from './util';
 
 export async function listGroups(env: Env, p: Property) {
@@ -62,11 +62,11 @@ export async function groupReport(env: Env, p: Property, ref: string, a: ReportA
     SUM(CASE WHEN ${cur} THEN x.clicks ELSE 0 END) AS c, SUM(CASE WHEN ${cur} THEN x.impressions ELSE 0 END) AS i,
     SUM(CASE WHEN ${cur} THEN x.pos_sum ELSE 0 END) AS ps, SUM(CASE WHEN ${prv} THEN x.clicks ELSE 0 END) AS pc,
     SUM(CASE WHEN ${prv} THEN x.impressions ELSE 0 END) AS pi, SUM(CASE WHEN ${prv} THEN x.pos_sum ELSE 0 END) AS pps`;
-  const xjoin = `x.property_id = ?1 AND x.search_type = ?2 AND ((${cur}) OR (${prv}))`;
+  const xjoin = `x.property_id = ?1 AND x.search_type = ?2 AND ${spanCond(r)}`;
   const [exact, contains] = await Promise.all([
     env.DB.prepare(
       `SELECT t.term, t.match, t.query_id, ${sums} FROM keyword_group_terms t
-       LEFT JOIN query_daily x ON x.query_id = t.query_id AND ${xjoin}
+       LEFT JOIN query_daily x INDEXED BY query_daily_lookup ON x.query_id = t.query_id AND ${xjoin}
        WHERE t.group_id = ?3 AND t.match = 'exact' GROUP BY t.term`,
     )
       .bind(p.id, r.searchType, g.id)

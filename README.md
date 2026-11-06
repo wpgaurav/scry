@@ -26,6 +26,9 @@ Scry is one Cloudflare Worker that copies your Search Console data into D1 every
   | Content decay | Pages that lost clicks in four 28-day blocks in a row |
   | Zero clicks | Pages with many impressions and no clicks |
 
+- **Alerts.** Rules that watch for site-wide click drops, pages losing traffic, keyword groups slipping, pages dropping out of the index, sitemap errors and canonical mismatches. They're checked daily, each problem is reported once, and alerts go to email, Slack, Discord, Microsoft Teams or a signed webhook.
+- **Annotations.** Mark releases, migrations and incidents on the charts. Confirmed Google ranking updates are imported automatically from Google's Search Status Dashboard, and AI tools get the annotations along with the time series.
+- **Content groups.** Define site sections with URL patterns (`/blog/`, `/docs/*/api`) and filter any report or insight to one section.
 - **Indexing.** A daily URL Inspection budget works through your most valuable pages. Scry flags pages that aren't indexed, canonical mismatches and coverage changes, tracks sitemap health, and lets you submit sitemaps.
 - **Keyword groups.** Rank tracking from your own Search Console data, with exact or contains matching and no keyword limit.
 - **AI access.** An MCP server at `/mcp`, a REST API at `/api` and an OpenAPI 3.1 spec at `/api/openapi.json`. All three come from one tool registry.
@@ -95,6 +98,46 @@ Access gives you Google or one-time PIN sign-in with an email allow list.
 3. Set the `ACCESS_TEAM_DOMAIN` variable (`https://yourteam.cloudflareaccess.com`) and the `ACCESS_AUD` secret (the application's audience tag). You can also limit sign-ins with `ALLOWED_EMAILS`.
 
 Access and the password can run side by side. Remove `ADMIN_PASSWORD` to switch to Access only.
+
+### Alerts
+
+Go to **Alerts → Channels** and add a destination:
+
+| Type | What to paste |
+|---|---|
+| Slack | An incoming webhook URL (`https://hooks.slack.com/services/…`) |
+| Discord | A channel webhook URL (`https://discord.com/api/webhooks/…`) |
+| Microsoft Teams | A Workflows URL from "Post to a channel when a webhook request is received" |
+| Webhook | Any https URL. Scry shows a signing secret once, when you add it |
+| Email | One or more addresses. Uses the email settings from the weekly digest |
+
+Then go to **Alerts → Rules** and pick what to watch:
+
+| Rule | Fires when | Default |
+|---|---|---|
+| Site clicks dropped | Clicks in the last 7 days fell against the 7 days before | 20% |
+| A page lost clicks | A page with real traffic lost a share of its weekly clicks | 50%, at least 30 clicks |
+| Keyword group slipped | A keyword group's average position got worse | 2 positions |
+| Page dropped out of the index | An inspected page went from indexed to not indexed | – |
+| Sitemap has errors | Google reports errors on a submitted sitemap | – |
+| Google picked another canonical | Google ignored the canonical you declared on a page with traffic | 20 clicks |
+
+Checks run daily at 05:30 UTC on final data, or on demand with **Run checks now**. A rule can watch one property or all of them. Each problem gets a fingerprint, so it alerts once rather than every day. Webhook requests carry `X-Scry-Timestamp` and `X-Scry-Signature: sha256=<HMAC-SHA256 of "timestamp.body">`, so you can verify they came from your Scry. Channel URLs are stored encrypted, and only a signed-in person can add or remove them.
+
+### Annotations
+
+Add a note under any chart, or use the `add_annotation` tool or REST endpoint. A note can be one day or a date range, for one property or all of them. Confirmed Google ranking updates are imported daily from Google's [Search Status Dashboard](https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history) and shaded on the charts. Older updates are included so the full 16 months is covered. You can hide them for a property in **Settings → Properties → Edit**.
+
+### Content groups
+
+Go to **Content groups** for a property and define a section with patterns, one per line:
+
+- `/blog/` matches paths that start with `/blog/`.
+- `/docs/*/api` uses `*` as a wildcard.
+- `pricing` matches anywhere in the path.
+- Exclude patterns remove pages, for example `/blog/tag/`.
+
+**Preview** shows the matching pages before you save. Once saved, pick the group in the filter bar, or pass `group=` to the API or MCP, to limit any report or insight to that section. The patterns also become regex filters for live queries, so country and device filters work too.
 
 ### Branding
 
@@ -166,6 +209,10 @@ Then ask questions like "Which example.com pages lost the most clicks this month
 | `list_sitemaps`, `submit_sitemap` | Sitemap health and submission |
 | `list_keyword_groups`, `keyword_group_report`, `save_keyword_group`, `delete_keyword_group` | Rank tracking |
 | `list_gsc_sites`, `add_property`, `update_property` | Property management |
+| `list_content_groups`, `preview_content_group`, `save_content_group`, `delete_content_group` | Site sections by URL pattern. Pass `group` to any report |
+| `list_annotations`, `add_annotation`, `delete_annotation`, `import_google_updates` | Dated notes and Google ranking updates |
+| `list_alerts`, `acknowledge_alerts`, `run_alert_checks` | Fired alerts |
+| `list_alert_rules`, `save_alert_rule`, `delete_alert_rule` | What to watch and where it goes |
 | `sync_status`, `run_sync` | Sync coverage and a manual run |
 
 Every tool is also a REST endpoint:
@@ -241,7 +288,7 @@ New tools go in `src/tools.ts`. That one registry feeds the REST API, the MCP se
 
 ## Roadmap
 
-Alerts, chart annotations and content groups are next, followed by client portals with share links and scheduled PDF reports, anomaly detection and MCP over OAuth. See [ROADMAP.md](ROADMAP.md) and tell us what you'd use.
+Client portals with share links and scheduled PDF reports are next, then anomaly detection, keyword position history and MCP over OAuth. See [ROADMAP.md](ROADMAP.md) and tell us what you'd use.
 
 ## License
 

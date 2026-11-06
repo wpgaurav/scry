@@ -38,5 +38,28 @@ export const MIGRATIONS: { name: string; statements: string[] }[] = [
     "statements": [
       "CREATE TABLE settings (\n  key TEXT PRIMARY KEY,\n  value TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n)"
     ]
+  },
+  {
+    "name": "0004_groups_annotations_alerts.sql",
+    "statements": [
+      "CREATE TABLE content_groups (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  property_id INTEGER NOT NULL,\n  name TEXT NOT NULL,\n  include_patterns TEXT NOT NULL,\n  exclude_patterns TEXT NOT NULL DEFAULT '[]',\n  created_at TEXT NOT NULL,\n  UNIQUE (property_id, name)\n)",
+      "CREATE TABLE annotations (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  property_id INTEGER,\n  date TEXT NOT NULL,\n  end_date TEXT,\n  title TEXT NOT NULL,\n  note TEXT,\n  category TEXT NOT NULL DEFAULT 'note',\n  source TEXT NOT NULL DEFAULT 'manual',\n  external_id TEXT UNIQUE,\n  url TEXT,\n  created_at TEXT NOT NULL\n)",
+      "CREATE INDEX annotations_date ON annotations(date)",
+      "ALTER TABLE properties ADD COLUMN show_google_updates INTEGER NOT NULL DEFAULT 1",
+      "INSERT INTO annotations (property_id, date, end_date, title, category, source, external_id, url, created_at) VALUES\n  (NULL, '2024-08-15', '2024-09-03', 'August 2024 core update', 'google', 'google', 'archive:2024-08-core', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2024-11-11', '2024-12-05', 'November 2024 core update', 'google', 'google', 'archive:2024-11-core', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2024-12-12', '2024-12-18', 'December 2024 core update', 'google', 'google', 'archive:2024-12-core', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2024-12-19', '2024-12-26', 'December 2024 spam update', 'google', 'google', 'archive:2024-12-spam', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2025-03-13', '2025-03-27', 'March 2025 core update', 'google', 'google', 'archive:2025-03-core', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2025-06-30', '2025-07-17', 'June 2025 core update', 'google', 'google', 'archive:2025-06-core', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06'),\n  (NULL, '2025-08-26', '2025-09-22', 'August 2025 spam update', 'google', 'google', 'archive:2025-08-spam', 'https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history', '2026-11-06')",
+      "CREATE TABLE alert_channels (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  kind TEXT NOT NULL CHECK (kind IN ('email', 'slack', 'discord', 'teams', 'webhook')),\n  name TEXT NOT NULL,\n  target_ciphertext TEXT NOT NULL,\n  target_iv TEXT NOT NULL,\n  target_hint TEXT NOT NULL,\n  secret_ciphertext TEXT,\n  secret_iv TEXT,\n  created_at TEXT NOT NULL,\n  last_sent_at TEXT,\n  last_error TEXT\n)",
+      "CREATE TABLE alert_rules (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  property_id INTEGER,\n  kind TEXT NOT NULL,\n  threshold REAL,\n  params TEXT NOT NULL DEFAULT '{}',\n  channels TEXT NOT NULL DEFAULT '[]',\n  enabled INTEGER NOT NULL DEFAULT 1,\n  created_at TEXT NOT NULL,\n  last_checked_at TEXT\n)",
+      "CREATE TABLE alerts (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  rule_id INTEGER,\n  property_id INTEGER,\n  kind TEXT NOT NULL,\n  fingerprint TEXT NOT NULL UNIQUE,\n  severity TEXT NOT NULL DEFAULT 'warning',\n  title TEXT NOT NULL,\n  detail TEXT NOT NULL DEFAULT '{}',\n  link TEXT,\n  status TEXT NOT NULL DEFAULT 'open',\n  created_at TEXT NOT NULL,\n  acknowledged_at TEXT,\n  delivered_at TEXT\n)",
+      "CREATE INDEX alerts_status ON alerts(status, created_at)"
+    ]
+  },
+  {
+    "name": "0005_lookup_indexes.sql",
+    "statements": [
+      "CREATE INDEX IF NOT EXISTS page_daily_lookup ON page_daily(property_id, search_type, page_id, date)",
+      "CREATE INDEX IF NOT EXISTS query_daily_lookup ON query_daily(property_id, search_type, query_id, date)",
+      "DROP INDEX IF EXISTS page_daily_page",
+      "DROP INDEX IF EXISTS query_daily_query"
+    ]
   }
 ];

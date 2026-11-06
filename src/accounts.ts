@@ -44,6 +44,13 @@ export async function encryptKey(env: Env, json: string) {
   return { ciphertext: b64(ct), iv: b64(iv) };
 }
 
+/** Generic AES-GCM helpers (same key) for other secrets such as alert webhook URLs. */
+export const encryptText = encryptKey;
+export async function decryptText(env: Env, ciphertext: string, iv: string): Promise<string> {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, await aesKey(env), unb64(ciphertext));
+  return new TextDecoder().decode(pt);
+}
+
 async function decryptKey(env: Env, row: AccountRow): Promise<Credential> {
   try {
     const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(row.key_iv) }, await aesKey(env), unb64(row.key_ciphertext));

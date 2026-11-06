@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const NAMES = ['home', 'chart-line', 'file-text', 'search', 'bulb', 'target-arrow', 'world-search', 'settings', 'download', 'refresh',
   'external-link', 'copy', 'trash', 'trending-up', 'trending-down', 'minus', 'moon', 'sun', 'key', 'plug-connected', 'alert-triangle',
-  'info-circle', 'arrow-left', 'device-desktop', 'world', 'list-check', 'sitemap', 'filter'];
+  'info-circle', 'arrow-left', 'device-desktop', 'world', 'list-check', 'sitemap', 'filter', 'bell', 'folders', 'note', 'calendar-event', 'plus', 'check', 'send'];
 const dirs = [process.env.ICON_DIR, join(homedir(), 'Icons/svg/outline'), 'node_modules/@tabler/icons/icons/outline'].filter(Boolean);
 const dir = dirs.find((d) => existsSync(join(d, 'home.svg')));
 if (!dir) throw new Error('No Tabler icon directory found. Set ICON_DIR.');

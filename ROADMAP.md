@@ -16,31 +16,11 @@ Status: ✅ shipped · 🔨 next · 🗺 planned · 💭 exploring. Open an issu
 - ✅ Password or Cloudflare Access sign-in, plus a one-click deploy
 - ✅ **White-label branding:** name, logo, dark-mode logo, favicon, accent colour with automatic 7:1 contrast, and a login page message
 - ✅ Weekly email digest and a WordPress plugin
+- ✅ **Alerts:** six rule types (site clicks drop, page drop, keyword group slipping, deindexed page, sitemap errors, canonical mismatch), checked daily, reported once, and delivered to email, Slack, Discord, Teams or a signed webhook
+- ✅ **Annotations:** notes on dates or ranges, plus Google ranking updates imported from the Search Status Dashboard and shown on every chart
+- ✅ **Content groups:** site sections by URL pattern, as a filter on every report and insight
 
 ## Next (v0.3)
-
-### 🔨 Alerts
-
-Rules that watch your data and tell you when something breaks, instead of you finding out a month later.
-
-- Built-in rules: clicks down X% week over week, a page dropped out of the index, a keyword group losing positions, a sitemap error, a canonical mismatch on a top page.
-- Per-property thresholds and quiet hours.
-- Delivery by email, Slack, Discord, Microsoft Teams or a generic webhook. Each alert carries a deep link to the page or query.
-- New MCP tools `list_alerts` and `acknowledge_alert`.
-
-### 🔨 Annotations
-
-Mark the dates that explain your charts: a redesign, a migration, a Google core update.
-
-- Add notes by hand, or import from a CSV or the API.
-- An optional, maintained feed of confirmed Google ranking updates, toggled per property.
-- Shown as markers on every trend chart, and returned by `get_timeseries`, so AI tools can say "the drop starts two days after the March core update."
-
-### 🔨 Content groups
-
-Group pages with URL rules (`/blog/`, `/docs/`, `/product/*`) and see each section's clicks, impressions and position as a unit. Groups work as filters on every report and in the insights, so you can ask "content decay in /blog only."
-
-## Planned (v0.4)
 
 ### 🗺 Client portal and shared reports
 
@@ -68,7 +48,7 @@ An optional "Ask Scry" box and an AI paragraph in the weekly digest. You'd bring
 
 OAuth 2.1 sign-in for MCP, using Cloudflare's workers-oauth-provider. That lets Claude.ai web connectors and ChatGPT connectors add Scry with a click instead of a pasted key. Bearer keys stay for CLI tools.
 
-## Later (v0.5+)
+## Later (v0.4+)
 
 - 🗺 **Bing Webmaster Tools:** the same reports for Bing, side by side with Google, through the Bing API with your own key.
 - 🗺 **GA4 landing pages:** sessions and conversions next to clicks for each page, through the same service account and the GA4 Data API.
