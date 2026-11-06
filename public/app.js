@@ -6,6 +6,9 @@ const view = $('#view');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const nf = new Intl.NumberFormat('en-US');
+const cnf = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+/** Axis labels: 8,000 → 8K so the axes don't eat a phone's width. */
+const compactNum = (v) => (Math.abs(v) >= 1000 ? cnf.format(v) : nf.format(Math.round(v)));
 const fmt = (n) => (n === null || n === undefined ? '–' : nf.format(n));
 const pct = (n) => (n === null || n === undefined ? '–' : `${n}%`);
 const shortUrl = (u) => String(u || '').replace(/^https?:\/\/(www\.)?[^/]+/, '') || '/';
@@ -233,6 +236,8 @@ function trendChart(el, rows, notes = [], pid = null) {
   const s2 = cssVar('--gt-series-2');
   const muted = cssVar('--gt-muted');
   const line = cssVar('--gt-line');
+  const compact = compactNotes(el, notes);
+  const narrow = (el.clientWidth || 0) < 576;
   const chart = new ApexCharts(el, {
     chart: { type: 'line', height: 300, fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false }, background: 'transparent' },
     theme: { mode: isDark() ? 'dark' : 'light' },
@@ -247,16 +252,16 @@ function trendChart(el, rows, notes = [], pid = null) {
     grid: { borderColor: line, strokeDashArray: 3, padding: { left: 8, right: 8 } },
     xaxis: { type: 'datetime', labels: { style: { colors: muted, fontSize: '13px' }, datetimeUTC: true }, axisBorder: { color: line }, axisTicks: { color: line } },
     yaxis: [
-      { title: { text: 'Clicks', style: { color: muted, fontWeight: 400 } }, labels: { style: { colors: muted, fontSize: '13px' }, formatter: (v) => nf.format(Math.round(v)) } },
-      { opposite: true, title: { text: 'Impressions', style: { color: muted, fontWeight: 400 } }, labels: { style: { colors: muted, fontSize: '13px' }, formatter: (v) => nf.format(Math.round(v)) } },
+      { title: { text: narrow ? undefined : 'Clicks', style: { color: muted, fontWeight: 400 } }, labels: { style: { colors: muted, fontSize: '13px' }, formatter: (v) => compactNum(v) } },
+      { opposite: true, title: { text: narrow ? undefined : 'Impressions', style: { color: muted, fontWeight: 400 } }, labels: { style: { colors: muted, fontSize: '13px' }, formatter: (v) => compactNum(v) } },
     ],
     legend: { position: 'top', horizontalAlign: 'left', labels: { colors: cssVar('--gt-ink') }, fontSize: '14px' },
     tooltip: { shared: true, x: { format: 'ddd d MMM yyyy' }, theme: isDark() ? 'dark' : 'light' },
-    annotations: { xaxis: chartAnnotations(notes, rows) },
+    annotations: { xaxis: chartAnnotations(notes, rows, compact) },
   });
   chart.render();
   charts.push(chart);
-  if (pid !== null) el.insertAdjacentHTML('afterend', annotationStrip(notes, pid));
+  if (pid !== null) el.insertAdjacentHTML('afterend', annotationStrip(notes, pid, compact));
   const prov = rows.filter((r) => r.provisional).length;
   if (prov) el.insertAdjacentHTML('afterend', `<div class="text-secondary small px-3 pb-3">The last ${prov} day${prov > 1 ? 's are' : ' is'} provisional and may still change.</div>`);
 }
@@ -1170,55 +1175,64 @@ async function contentGroupsView(pid, f) {
 
 const NOTE_LABEL = { note: 'Note', release: 'Release', content: 'Content', technical: 'Technical', incident: 'Incident', google: 'Google update' };
 
-function chartAnnotations(notes, rows) {
+/** Titles on wide charts with few notes; numbered markers otherwise, matching the list. */
+const compactNotes = (el, notes) => (el?.clientWidth || 0) < 720 || notes.length > 4;
+
+function chartAnnotations(notes, rows, compact) {
   if (!notes?.length || !rows.length) return [];
   const first = Date.parse(rows[0].date);
   const last = Date.parse(rows[rows.length - 1].date);
   const accent = cssVar('--gt-accent');
   const s2 = cssVar('--gt-series-2');
   const ink = cssVar('--gt-ink');
-  return notes.map((n) => {
+  return notes.map((n, i) => {
     const x = Math.max(Date.parse(n.date), first);
     const x2 = n.end_date ? Math.min(Date.parse(n.end_date), last) : null;
     const google = n.category === 'google';
     const color = google ? s2 : accent;
+    const text = compact ? String(i + 1) : n.title.length > 22 ? n.title.slice(0, 21) + '…' : n.title;
     return {
       x,
       ...(x2 && x2 > x ? { x2, fillColor: color, opacity: 0.08 } : {}),
       borderColor: color,
       strokeDashArray: google ? 0 : 4,
       label: {
-        text: n.title.length > 26 ? n.title.slice(0, 25) + '…' : n.title,
+        text,
         orientation: 'horizontal',
-        textAnchor: 'start',
-        offsetX: 2,
+        textAnchor: compact ? 'middle' : 'start',
+        offsetX: compact ? 0 : 2,
+        // Stagger neighbours so markers that sit close together don't collide.
+        offsetY: compact ? (i % 2) * 18 : (i % 3) * 20,
         borderColor: color,
-        style: { color: ink, background: isDark() ? '#1c1b19' : '#ffffff', fontSize: '12px', fontWeight: 500 },
+        borderRadius: compact ? 10 : 4,
+        style: { color: ink, background: isDark() ? '#1c1b19' : '#ffffff', fontSize: '12px', fontWeight: 600, padding: compact ? { left: 6, right: 6, top: 2, bottom: 2 } : undefined },
       },
     };
   });
 }
 
-function annotationStrip(notes, pid) {
+function annotationStrip(notes, pid, compact) {
   const items = notes
     .map(
-      (n) =>
-        `<li class="d-flex align-items-center gap-2 py-1"><span class="badge ${n.category === 'google' ? 'badge-soft' : 'badge-note'}">${esc(NOTE_LABEL[n.category] || n.category)}</span>
-        <span class="text-secondary">${esc(n.date)}${n.end_date ? ` to ${esc(n.end_date)}` : ''}</span>
-        ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>` : `<span>${esc(n.title)}</span>`}
-        ${n.source === 'manual' ? `<button class="btn btn-sm btn-icon ms-auto" type="button" data-del-note="${n.id}" aria-label="Delete note">${I.trash}</button>` : ''}</li>`,
+      (n, i) =>
+        `<li class="note-item">
+          <div class="note-meta">${compact ? `<span class="note-num" aria-hidden="true">${i + 1}</span>` : ''}<span class="badge ${n.category === 'google' ? 'badge-soft' : 'badge-note'}">${esc(NOTE_LABEL[n.category] || n.category)}</span>
+            <span class="text-secondary">${esc(n.date)}${n.end_date ? ` → ${esc(n.end_date)}` : ''}</span></div>
+          <div class="note-title">${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>` : esc(n.title)}</div>
+          ${n.source === 'manual' ? `<button class="btn btn-sm btn-icon note-del" type="button" data-del-note="${n.id}" aria-label="Delete note: ${esc(n.title)}">${I.trash}</button>` : ''}
+        </li>`,
     )
     .join('');
   return `<div class="border-top pt-3 mt-2" id="notes">
-    ${items ? `<ul class="list-unstyled mb-3">${items}</ul>` : '<p class="text-secondary mb-3">No annotations in this range.</p>'}
+    ${items ? `<ul class="list-unstyled note-list mb-3">${items}</ul>` : '<p class="text-secondary mb-3">No annotations in this range.</p>'}
     <details><summary class="text-secondary">${I.note} Add an annotation</summary>
       <form class="row g-2 align-items-end mt-1" id="nf">
-        <div class="col-sm-3"><label class="form-label" for="n-date">Date</label><input class="form-control" type="date" id="n-date" name="date" required></div>
-        <div class="col-sm-3"><label class="form-label" for="n-end">End date (optional)</label><input class="form-control" type="date" id="n-end" name="end_date"></div>
-        <div class="col-sm-6"><label class="form-label" for="n-title">What happened</label><input class="form-control" id="n-title" name="title" required maxlength="120" placeholder="Redesigned the pricing page"></div>
-        <div class="col-sm-3"><label class="form-label" for="n-cat">Type</label><select class="form-select" id="n-cat" name="category"><option value="note">Note</option><option value="release">Release</option><option value="content">Content</option><option value="technical">Technical</option><option value="incident">Incident</option></select></div>
-        <div class="col-sm-5"><label class="form-check mt-4"><input class="form-check-input" type="checkbox" name="all"><span class="form-check-label">Applies to all properties</span></label></div>
-        <div class="col-sm-4 text-sm-end"><button class="btn btn-primary" type="submit">${I.plus} Add</button></div>
+        <div class="col-6 col-sm-3"><label class="form-label" for="n-date">Date</label><input class="form-control" type="date" id="n-date" name="date" required></div>
+        <div class="col-6 col-sm-3"><label class="form-label" for="n-end">End (optional)</label><input class="form-control" type="date" id="n-end" name="end_date"></div>
+        <div class="col-12 col-sm-6"><label class="form-label" for="n-title">What happened</label><input class="form-control" id="n-title" name="title" required maxlength="120" placeholder="Redesigned the pricing page"></div>
+        <div class="col-6 col-sm-3"><label class="form-label" for="n-cat">Type</label><select class="form-select" id="n-cat" name="category"><option value="note">Note</option><option value="release">Release</option><option value="content">Content</option><option value="technical">Technical</option><option value="incident">Incident</option></select></div>
+        <div class="col-6 col-sm-5"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="all"><span class="form-check-label">All properties</span></label></div>
+        <div class="col-12 col-sm-4 text-sm-end"><button class="btn btn-primary w-100 w-sm-auto" type="submit">${I.plus} Add</button></div>
       </form><div id="nmsg" class="mt-2"></div></details>
   </div>`;
 }

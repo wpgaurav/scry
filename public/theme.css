@@ -115,3 +115,14 @@ pre.code { background: var(--tblr-bg-surface-secondary); color: var(--gt-ink); p
 .apexcharts-tooltip, .apexcharts-legend-text, .apexcharts-text { font-size: 0.9rem !important; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Annotation list: two tidy lines per note on any width. */
+.note-list { display: grid; gap: 10px; }
+.note-item { position: relative; padding-right: 44px; min-width: 0; }
+.note-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.note-meta .badge { flex: none; white-space: nowrap; }
+.note-meta .text-secondary { white-space: nowrap; }
+.note-title { margin-top: 2px; overflow-wrap: anywhere; }
+.note-del { position: absolute; top: 0; right: 0; }
+.note-num { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; border: 1px solid var(--gt-line); font-weight: 600; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+@media (min-width: 576px) { .w-sm-auto { width: auto !important; } }
