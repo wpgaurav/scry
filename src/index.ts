@@ -58,6 +58,11 @@ app.use('*', async (c, next) => {
   if (isApi(c.req.path)) for (const [k, v] of Object.entries(CORS)) c.res.headers.set(k, v);
   c.res.headers.set('x-content-type-options', 'nosniff');
   c.res.headers.set('referrer-policy', 'same-origin');
+  // App shell files change on every deploy: make browsers revalidate (a cheap 304) instead of reusing a stale copy.
+  const type = c.res.headers.get('content-type') || '';
+  if (!c.req.path.startsWith('/vendor/') && /text\/html|javascript|text\/css/.test(type) && c.req.path !== '/brand.css') {
+    c.res.headers.set('cache-control', 'no-cache');
+  }
 });
 
 app.options('*', (c) => (isApi(c.req.path) ? new Response(null, { status: 204, headers: CORS }) : c.text('', 404)));
