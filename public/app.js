@@ -10,7 +10,11 @@ const cnf = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractio
 /** Axis labels: 8,000 → 8K so the axes don't eat a phone's width. */
 const compactNum = (v) => (Math.abs(v) >= 1000 ? cnf.format(v) : nf.format(Math.round(v)));
 const fmt = (n) => (n === null || n === undefined ? '–' : nf.format(n));
-const pct = (n) => (n === null || n === undefined ? '–' : `${n}%`);
+const nf2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (n) => (n === null || n === undefined ? '–' : `${nf2.format(n)}%`);
+/** Escapes text and lets it wrap after / - # ? = _ . @ & instead of mid-word. */
+const breakable = (v) => String(v ?? '').split(/(?<=[/\-#?=_.@&])/).map(esc).join('<wbr>');
+const urlSpan = (v) => `<span class="url">${breakable(v)}</span>`;
 const shortUrl = (u) => String(u || '').replace(/^https?:\/\/(www\.)?[^/]+/, '') || '/';
 
 /** Coloured delta. invert=true when lower is better (position). */
@@ -119,7 +123,7 @@ function filterBar() {
     ${sel('compare', 'Compare', [['', 'Previous period'], ['yoy', 'Year over year'], ['none', 'No comparison']])}
     ${sel('search_type', 'Search type', [['', 'Web'], ['image', 'Image'], ['video', 'Video'], ['news', 'News'], ['discover', 'Discover'], ['googleNews', 'Google News']])}
     ${sel('device', 'Device', [['', 'All devices'], ['DESKTOP', 'Desktop'], ['MOBILE', 'Mobile'], ['TABLET', 'Tablet']])}
-    <div class="col-6 col-sm-auto"><label class="form-label mb-1" for="f-country">Country</label><input class="form-control" id="f-country" name="country" size="6" placeholder="usa" value="${esc(f.country || '')}" pattern="[a-zA-Z]{3}" title="3-letter code, e.g. usa, ind"></div>
+    <div class="col-6 col-sm-auto"><label class="form-label mb-1" for="f-country">Country</label><input class="form-control" id="f-country" name="country" size="6" placeholder="Any" title="3-letter country code, like usa or ind" value="${esc(f.country || '')}" pattern="[a-zA-Z]{3}" title="3-letter code, e.g. usa, ind"></div>
     ${sel('brand', 'Queries', [['', 'All queries'], ['branded', 'Branded'], ['nonbranded', 'Non-branded']])}
     ${state.groups?.length ? sel('group', 'Content group', [['', 'All pages'], ...state.groups.map((g) => [g.name, esc(g.name)])]) : ''}
   </form>`;
@@ -138,7 +142,7 @@ function page({ title, subtitle = '', actions = '', filters = false, back = '' }
       ${back ? `<a href="${back}" class="d-inline-flex align-items-center gap-1 mb-2">${I['arrow-left']} Back</a>` : ''}
       <div class="row g-2 align-items-center">
         <div class="col"><h1 class="page-title">${title}</h1>${subtitle ? `<div class="text-secondary mt-1">${subtitle}</div>` : ''}</div>
-        ${actions ? `<div class="col-auto ms-auto"><div class="btn-list">${actions}</div></div>` : ''}
+        ${actions ? `<div class="col-12 col-md-auto ms-md-auto"><div class="btn-list">${actions}</div></div>` : ''}
       </div>
       ${filters ? filterBar() : ''}
     </div></div>
@@ -247,7 +251,7 @@ function trendChart(el, rows, notes = [], pid = null) {
     ],
     colors: [accent, s2],
     stroke: { width: [2, 1.5], curve: 'straight' },
-    fill: { type: ['gradient', 'solid'], gradient: { shadeIntensity: 0, opacityFrom: 0.22, opacityTo: 0.02 } },
+    fill: { type: ['gradient', 'solid'], gradient: { type: 'vertical', shadeIntensity: 0, opacityFrom: 0.22, opacityTo: 0.02, stops: [0, 100] } },
     dataLabels: { enabled: false },
     grid: { borderColor: line, strokeDashArray: 3, padding: { left: 8, right: 8 } },
     xaxis: { type: 'datetime', labels: { style: { colors: muted, fontSize: '13px' }, datetimeUTC: true }, axisBorder: { color: line }, axisTicks: { color: line } },
@@ -294,7 +298,7 @@ function table(cols, rows, sortState, emptyText) {
           : !sortState && c.label && c.nosort !== true && !c.label.includes('visually-hidden')
             ? `<button type="button" class="table-sort" data-csort="${c.num && c.key !== 'position' ? 'desc' : 'asc'}">${c.label}</button>`
             : c.label;
-      return `<th class="${c.num ? 'text-end' : ''}" ${active ? `aria-sort="${sortState.order === 'asc' ? 'ascending' : 'descending'}"` : ''} scope="col">${inner}</th>`;
+      return `<th class="${c.num ? 'text-end' : ''} ${c.cls || ''}" ${active ? `aria-sort="${sortState.order === 'asc' ? 'ascending' : 'descending'}"` : ''} scope="col">${inner}</th>`;
     })
     .join('');
   const body = rows
@@ -306,7 +310,7 @@ function table(cols, rows, sortState, emptyText) {
             const content = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key] ?? '–');
             const v = r[c.key];
             const dv = !sortState && (typeof v === 'number' || typeof v === 'string') ? ` data-v="${esc(String(v))}"` : '';
-            return `<td class="${c.num ? 'num' : 'cell-label'}"${dv}>${c.link ? `<a href="${c.link(r)}">${content}</a>` : content}</td>`;
+            return `<td class="${c.num ? 'num' : 'cell-label'} ${c.cls || ''}"${dv}>${c.link ? `<a href="${c.link(r)}">${content}</a>` : content}</td>`;
           })
           .join('') +
         '</tr>',
@@ -383,7 +387,7 @@ const metricCols = (hasPrev, keep) =>
     ...(hasPrev ? [{ key: 'delta_position', label: 'Pos. change', num: true, fmt: (v) => delta(v, { invert: true }), sort: 'delta_position' }] : []),
   ].filter((c) => !keep || keep.includes(c.key));
 
-const pageCol = (pid) => ({ key: 'page', label: 'Page', fmt: (v) => `<span class="url">${esc(shortUrl(v))}</span>`, link: (r) => href(`/p/${pid}/page`, { url: r.page }) });
+const pageCol = (pid) => ({ key: 'page', label: 'Page', fmt: (v) => `${urlSpan(shortUrl(v))}`, link: (r) => href(`/p/${pid}/page`, { url: r.page }) });
 const queryCol = (pid) => ({ key: 'query', label: 'Query', link: (r) => href(`/p/${pid}/query`, { q: r.query }) });
 
 function csvButton(path, params) {
@@ -393,14 +397,15 @@ function csvButton(path, params) {
 
 function rangeText(r) {
   if (!r) return '';
-  return `${esc(r.from)} to ${esc(r.to)}${r.compare_from ? ` vs ${esc(r.compare_from)} to ${esc(r.compare_to)}` : ''}`;
+  const d = (x) => `<span class="text-nowrap">${esc(x)}</span>`;
+  return `${d(r.from)} to ${d(r.to)}${r.compare_from ? ` vs ${d(r.compare_from)} to ${d(r.compare_to)}` : ''}`;
 }
 
 function kpis(s) {
   const c = s.current;
   const d = s.delta;
   const k = (label, value, dl) =>
-    `<div class="col-sm-6 col-lg-3"><div class="card card-sm"><div class="card-body">
+    `<div class="col-6 col-lg-3"><div class="card card-sm"><div class="card-body">
       <div class="subheader">${label}</div>
       <div class="kpi-value mt-1">${value}</div>
       ${d ? `<div class="mt-1 small">${dl} <span class="text-secondary">vs before</span></div>` : ''}
@@ -467,10 +472,10 @@ async function overviewView(pid, f) {
     `${kpis(s)}
     <div class="row row-cards">
       <div class="col-12">${card('Performance', '<div id="chart" class="chart-box"></div>')}</div>
-      <div class="col-lg-6">${card('Top pages', table([pageCol(pid), ...metricCols(hp, short)], pages.rows), { flush: true, actions: `<a href="${href(`/p/${pid}/pages`)}">All pages</a>` })}</div>
-      <div class="col-lg-6">${card('Top queries', table([queryCol(pid), ...metricCols(hp, short)], queries.rows), { flush: true, actions: `<a href="${href(`/p/${pid}/queries`)}">All queries</a>` })}</div>
-      <div class="col-lg-6">${card('Devices', table([{ key: 'device', label: 'Device', fmt: (v) => esc(String(v).charAt(0) + String(v).slice(1).toLowerCase()) }, ...metricCols(hp, ['clicks', 'delta_clicks', 'impressions', 'ctr', 'position'])], devices.rows), { flush: true })}</div>
-      <div class="col-lg-6">${card('Countries', table([{ key: 'country', label: 'Country', fmt: (v) => esc(String(v).toUpperCase()) }, ...metricCols(hp, ['clicks', 'delta_clicks', 'impressions', 'position'])], countries.rows.slice(0, 10)), { flush: true })}</div>
+      <div class="col-xl-6">${card('Top pages', table([pageCol(pid), ...metricCols(hp, short)], pages.rows), { flush: true, actions: `<a href="${href(`/p/${pid}/pages`)}">All pages</a>` })}</div>
+      <div class="col-xl-6">${card('Top queries', table([queryCol(pid), ...metricCols(hp, short)], queries.rows), { flush: true, actions: `<a href="${href(`/p/${pid}/queries`)}">All queries</a>` })}</div>
+      <div class="col-xl-6">${card('Devices', table([{ key: 'device', label: 'Device', fmt: (v) => esc(String(v).charAt(0) + String(v).slice(1).toLowerCase()) }, ...metricCols(hp, ['clicks', 'delta_clicks', 'impressions', 'position'])], devices.rows), { flush: true })}</div>
+      <div class="col-xl-6">${card('Countries', table([{ key: 'country', label: 'Country', fmt: (v) => esc(String(v).toUpperCase()) }, ...metricCols(hp, ['clicks', 'delta_clicks', 'impressions', 'position'])], countries.rows.slice(0, 10)), { flush: true })}</div>
     </div>`,
   );
   trendChart($('#chart'), t.rows, t.annotations || [], pid);
@@ -530,11 +535,11 @@ function inspectionGrid(ins) {
     ['Last crawl', esc(ins.last_crawl_time ? ins.last_crawl_time.slice(0, 10) : '–')],
     ['Crawled as', esc(ins.crawled_as)],
     ['Checked', esc(ins.checked_at ? ins.checked_at.slice(0, 10) : '–')],
-    ['Google canonical', `<span class="url">${esc(ins.google_canonical)}</span>`],
-    ['Declared canonical', `<span class="url">${esc(ins.user_canonical)}</span>`],
+    ['Google canonical', `${urlSpan(ins.google_canonical)}`],
+    ['Declared canonical', `${urlSpan(ins.user_canonical)}`],
   ];
   return `<div class="datagrid">${items
-    .filter(([, v]) => v && v !== 'null' && v !== '<span class="url"></span>')
+    .filter(([, v]) => v && v !== 'null' && v !== urlSpan(''))
     .map(([k, v]) => `<div class="datagrid-item"><div class="datagrid-title">${k}</div><div class="datagrid-content">${v}</div></div>`)
     .join('')}</div>${ins.inspection_link ? `<a class="btn mt-3" href="${esc(ins.inspection_link)}" target="_blank" rel="noopener">${I['external-link']} Open in Search Console</a>` : ''}`;
 }
@@ -546,7 +551,7 @@ async function pageView(pid, url, f) {
   const bucket = (label, n) => `<div class="col-6 col-md-3"><div class="subheader">${label}</div><div class="h2 mb-0">${fmt(n)}</div></div>`;
   view.innerHTML = page(
     {
-      title: `<span class="url">${esc(shortUrl(url))}</span>`,
+      title: `${urlSpan(shortUrl(url))}`,
       subtitle: `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a> · first seen ${esc(d.first_seen || '–')}`,
       filters: true,
       back: href(`/p/${pid}/pages`),
@@ -555,8 +560,8 @@ async function pageView(pid, url, f) {
     `${kpis(d.summary)}
     <div class="row row-cards">
       <div class="col-12">${card('Performance', '<div id="chart" class="chart-box"></div>')}</div>
-      <div class="col-lg-8">${card('Queries for this page', `<div class="card-body border-bottom"><div class="row g-3">${bucket('Top 3', b.top3)}${bucket('Positions 4–10', b.top10)}${bucket('11–20', b.top20)}${bucket('21+', b.beyond)}</div></div>${table([queryCol(pid), ...metricCols(hp).filter((c) => c.key !== 'delta_position')], d.queries)}`, { flush: true, actions: csvButton(`/p/${pid}/queries`, { ...f, page: url }) })}</div>
-      <div class="col-lg-4">${card('Index status', `<div id="ins">${inspectionGrid(d.inspection)}</div>`)}</div>
+      <div class="col-12">${card('Index status', `<div id="ins">${inspectionGrid(d.inspection)}</div>`)}</div>
+      <div class="col-12">${card('Queries for this page', `<div class="card-body border-bottom"><div class="row g-3">${bucket('Positions 1–3', b.top3)}${bucket('Positions 4–10', b.top10)}${bucket('Positions 11–20', b.top20)}${bucket('Positions 21+', b.beyond)}</div></div>${table([queryCol(pid), ...metricCols(hp).filter((c) => c.key !== 'delta_position')], d.queries)}`, { flush: true, actions: csvButton(`/p/${pid}/queries`, { ...f, page: url }) })}</div>
     </div>`,
   );
   trendChart($('#chart'), d.timeseries, d.annotations || []);
@@ -577,6 +582,21 @@ async function pageView(pid, url, f) {
 
 const shareCol = { key: 'impression_share', label: 'Impression share', fmt: (v) => `<div class="d-flex align-items-center gap-2"><span class="num" style="min-width:3.5em">${pct(v)}</span><div class="progress progress-sm flex-fill" style="min-width:60px"><div class="progress-bar" style="width:${Number(v) || 0}%" role="progressbar" aria-label="${pct(v)}"></div></div></div>` };
 
+/** Google reports #section links as separate URLs. Fold them under their page when that page is listed. */
+function foldJumpLinks(rows) {
+  const base = (u) => String(u).split('#')[0];
+  const listed = new Set(rows.filter((r) => !String(r.page).includes('#')).map((r) => r.page));
+  const extra = new Map();
+  const out = [];
+  for (const r of rows) {
+    const b = base(r.page);
+    if (r.page !== b && listed.has(b)) extra.set(b, (extra.get(b) || 0) + 1);
+    else out.push({ ...r });
+  }
+  for (const r of out) if (extra.has(r.page)) r.jump_links = extra.get(r.page);
+  return out;
+}
+
 async function queryView(pid, query, f) {
   const d = await api(`/p/${pid}/query`, { ...f, query });
   view.innerHTML = page(
@@ -585,7 +605,7 @@ async function queryView(pid, query, f) {
     <div class="row row-cards">
       <div class="col-12">${card('Performance', '<div id="chart" class="chart-box"></div>')}</div>
       <div class="col-12">${d.cannibalization ? alertBox('warning', 'Two or more pages split this query’s impressions. Consider merging them or making each one target a different intent.') : ''}
-        ${card('Ranking pages', table([pageCol(pid), shareCol, ...metricCols(false)], d.pages), { flush: true })}</div>
+        ${card('Ranking pages', table([{ ...pageCol(pid), fmt: (v, r) => urlSpan(shortUrl(v)) + (r.jump_links ? `<div class="text-secondary small">+${r.jump_links} jump link${r.jump_links > 1 ? 's' : ''} to sections</div>` : '') }, shareCol, ...metricCols(false)], foldJumpLinks(d.pages)), { flush: true, subtitle: 'Links to sections of a page (#jump-links) are counted under that page.' })}</div>
     </div>`,
   );
   trendChart($('#chart'), d.timeseries, d.annotations || []);
@@ -620,7 +640,7 @@ async function insightsView(pid, kind, f) {
         { key: 'ctr', label: 'CTR', num: true, fmt: pct },
         { key: 'expected_ctr', label: 'Usual CTR', num: true, fmt: pct },
         { key: 'est_extra_clicks', label: 'Extra clicks', num: true, fmt: (v) => `<strong>${fmt(v)}</strong>` },
-        { key: 'top_page', label: 'Top page', fmt: (v) => (v ? `<span class="url">${esc(shortUrl(v))}</span>` : '–'), link: (r) => href(`/p/${pid}/page`, { url: r.top_page }) },
+        { key: 'top_page', label: 'Top page', fmt: (v) => (v ? `${urlSpan(shortUrl(v))}` : '–'), link: (r) => href(`/p/${pid}/page`, { url: r.top_page }) },
       ],
       d.rows,
     );
@@ -661,7 +681,7 @@ async function insightsView(pid, kind, f) {
       d.rows,
     );
   }
-  const tabs = `<ul class="nav nav-tabs card-header-tabs flex-wrap" role="tablist">${INSIGHT_TABS.map(
+  const tabs = `<ul class="nav nav-tabs card-header-tabs nav-scroll" role="tablist">${INSIGHT_TABS.map(
     ([k, l]) => `<li class="nav-item"><a href="${href(`/p/${pid}/insights/${k}`)}" class="nav-link ${k === kind ? 'active' : ''}" ${k === kind ? 'aria-current="page"' : ''}>${l}</a></li>`,
   ).join('')}</ul>`;
   view.innerHTML = page(
@@ -723,7 +743,7 @@ async function groupView(pid, group, f) {
           { key: 'clicks', label: 'Clicks', num: true, fmt },
           { key: 'impressions', label: 'Impressions', num: true, fmt },
           { key: 'ctr', label: 'CTR', num: true, fmt: pct },
-          { key: 'top_page', label: 'Top page', fmt: (v) => (v ? `<span class="url">${esc(shortUrl(v))}</span>` : '–') },
+          { key: 'top_page', label: 'Top page', fmt: (v) => (v ? `${urlSpan(shortUrl(v))}` : '–') },
         ],
         d.rows,
       ),
@@ -742,18 +762,18 @@ async function indexingView(pid) {
   const t = d.totals || {};
   const stat = (label, v) => `<div class="col-6 col-lg-3"><div class="card card-sm"><div class="card-body"><div class="subheader">${label}</div><div class="kpi-value mt-1">${v}</div></div></div></div>`;
   const pageLink = (r) => href(`/p/${pid}/page`, { url: r.url });
-  const urlFmt = (v) => `<span class="url">${esc(shortUrl(v))}</span>`;
+  const urlFmt = (v) => `${urlSpan(shortUrl(v))}`;
   const day = (v) => esc(v ? String(v).slice(0, 10) : '–');
   view.innerHTML = page(
-    { title: 'Indexing', subtitle: `Last check ${day(t.last_checked)}`, actions: `<button class="btn" id="smr">${I.refresh} Refresh sitemaps</button>` },
-    `<div class="row row-cards mb-3">${stat('Pages inspected', fmt(t.inspected))}${stat('Indexed', fmt(t.passing))}${stat('Not indexed', fmt((t.inspected || 0) - (t.passing || 0)))}${stat('Inspections today', fmt(d.quota_used_today))}</div>
+    { title: 'Indexing', subtitle: t.last_checked ? `Last check ${day(t.last_checked)}` : 'No pages inspected yet. The daily check runs at 05:30 UTC, or use Inspect now on any page.', actions: `<button class="btn" id="smr">${I.refresh} Refresh sitemaps</button>` },
+    `<div class="row row-cards mb-3">${stat('Pages inspected', fmt(t.inspected))}${stat('Indexed', fmt(t.passing ?? 0))}${stat('Not indexed', fmt((t.inspected || 0) - (t.passing || 0)))}${stat('Inspections today', fmt(d.quota_used_today))}</div>
     <div class="row row-cards">
       <div class="col-lg-6">${card('By coverage state', table([{ key: 'coverage_state', label: 'State' }, { key: 'verdict', label: 'Verdict', fmt: (v) => coverageBadge({ verdict: v, coverage_state: v }) }, { key: 'pages', label: 'Pages', num: true, fmt }], d.by_state, null, ['No inspections yet', 'The daily job inspects your top pages first.']), { flush: true })}</div>
       <div class="col-lg-6">${card('Recent changes', table([{ key: 'url', label: 'Page', fmt: urlFmt, link: pageLink }, { key: 'prev_coverage_state', label: 'Was' }, { key: 'coverage_state', label: 'Now' }, { key: 'changed_at', label: 'When', fmt: day }], d.recent_changes, null, ['No changes yet', 'Coverage changes show up here after a re-inspection.']), { flush: true })}</div>
-      <div class="col-12">${card('Pages to fix', table([{ key: 'url', label: 'Page', fmt: urlFmt, link: pageLink }, { key: 'coverage_state', label: 'Coverage', fmt: (v, r) => coverageBadge(r) }, { key: 'google_canonical', label: 'Google canonical', fmt: (v, r) => (v && v !== r.user_canonical ? urlFmt(v) : '–') }, { key: 'clicks_30d', label: 'Clicks (30 days)', num: true, fmt }, { key: 'last_crawl_time', label: 'Last crawl', fmt: day }], d.problems, null, ['Nothing to fix', 'Every inspected page is indexed with the canonical you declared.']), { flush: true, subtitle: 'Not indexed, or Google chose a different canonical. Sorted by clicks.' })}</div>
+      <div class="col-12">${card('Pages to fix', table([{ key: 'url', label: 'Page', fmt: urlFmt, link: pageLink }, { key: 'coverage_state', label: 'Coverage', fmt: (v, r) => coverageBadge(r) }, { key: 'google_canonical', label: 'Google canonical', fmt: (v, r) => (v && v !== r.user_canonical ? urlFmt(v) : '–') }, { key: 'clicks_30d', label: 'Clicks (30 days)', num: true, fmt }, { key: 'last_crawl_time', label: 'Last crawl', fmt: day }], d.problems, null, t.inspected ? ['Nothing to fix', 'Every inspected page is indexed with the canonical you declared.'] : ['Nothing inspected yet', 'Problems show up here after the first daily check.']), { flush: true, subtitle: 'Not indexed, or Google chose a different canonical. Sorted by clicks.' })}</div>
       <div class="col-12">${card(
         'Sitemaps',
-        table([{ key: 'path', label: 'Sitemap', fmt: (v) => `<span class="url">${esc(v)}</span>` }, { key: 'last_downloaded', label: 'Last read', fmt: day }, { key: 'submitted', label: 'URLs', num: true, fmt }, { key: 'errors', label: 'Errors', num: true, fmt: (v) => (v ? `<span class="t-bad">${fmt(v)}</span>` : '0') }, { key: 'warnings', label: 'Warnings', num: true, fmt }], d.sitemaps, null, ['No sitemaps yet', 'Submit one below, or refresh to read them from Search Console.']) +
+        table([{ key: 'path', label: 'Sitemap', fmt: (v) => `${urlSpan(v)}` }, { key: 'last_downloaded', label: 'Last read', num: true, fmt: day }, { key: 'submitted', label: 'URLs', num: true, fmt }, { key: 'errors', label: 'Errors', num: true, fmt: (v) => (v ? `<span class="t-bad">${fmt(v)}</span>` : '0') }, { key: 'warnings', label: 'Warnings', num: true, fmt }], d.sitemaps, null, ['No sitemaps yet', 'Submit one below, or refresh to read them from Search Console.']) +
           `<div class="card-footer"><form class="row g-2 align-items-end" id="smf"><div class="col-sm"><label class="form-label" for="sm-url">Submit a sitemap</label><input class="form-control" id="sm-url" name="u" type="url" required placeholder="https://example.com/sitemap_index.xml"></div><div class="col-sm-auto"><button class="btn btn-primary" type="submit">${I.sitemap} Submit</button></div></form><div id="smmsg" class="mt-2"></div></div>`,
         { flush: true },
       )}</div>
@@ -877,7 +897,7 @@ async function settingsView() {
         `<div class="card-body border-bottom"><p class="m-0 text-secondary">Each property is read by a Google service account. Upload a JSON key, then add the account's email as a user in Search Console (Settings → Users and permissions). Full access lets the dashboard submit sitemaps.</p></div>` +
           table(
             [
-              { key: 'client_email', label: 'Account', fmt: (v, r) => `<div class="d-flex align-items-center gap-2"><code class="url">${esc(v)}</code><button class="btn btn-sm btn-icon" type="button" data-copy-text="${esc(v)}" aria-label="Copy email">${I.copy}</button></div>${r.project_id ? `<div class="text-secondary small mt-1">Project ${esc(r.project_id)}${r.key_id ? ` · key ${esc(r.key_id)}…` : ''}</div>` : ''}` },
+              { key: 'client_email', label: 'Account', fmt: (v, r) => `<div class="d-flex align-items-center gap-2"><code class="url">${breakable(v)}</code><button class="btn btn-sm btn-icon" type="button" data-copy-text="${esc(v)}" aria-label="Copy email">${I.copy}</button></div>${r.project_id ? `<div class="text-secondary small mt-1">Project ${esc(r.project_id)}${r.key_id ? ` · key ${esc(r.key_id)}…` : ''}</div>` : ''}` },
               { key: 'source', label: 'Source', fmt: (v) => `<span class="badge badge-soft">${v === 'secret' ? 'Worker secret' : 'Uploaded'}</span>` },
               { key: 'id', label: 'Sites it can read', num: true, fmt: (v) => { const x = siteCounts.get(String(v)); return x ? (x.error ? `<span class="t-bad">Error</span>` : fmt(x.sites)) : '–'; } },
               { key: 'properties', label: 'Used by', fmt: (v) => (v.length ? v.map((p) => `<span class="badge badge-soft me-1">${esc(p.label)}</span>`).join('') : '<span class="text-secondary">None</span>') },
@@ -899,7 +919,7 @@ async function settingsView() {
         { flush: true },
       )}</div>
 
-      <div class="col-lg-6">${card(
+      <div class="col-12">${card(
         'API keys',
         `<div class="card-body border-bottom"><p class="m-0 text-secondary">Keys let AI tools and scripts use the REST API and MCP server. Read keys see data. Write keys can also change settings, keyword groups and sitemaps.</p></div>` +
           table(
@@ -922,7 +942,7 @@ async function settingsView() {
         { flush: true },
       )}</div>
 
-      <div class="col-lg-6">${card(
+      <div class="col-12">${card(
         'Connect AI tools',
         `<div class="datagrid mb-3">
           <div class="datagrid-item"><div class="datagrid-title">MCP endpoint</div><div class="datagrid-content"><code>${esc(origin)}/mcp</code></div></div>
@@ -1204,7 +1224,7 @@ async function contentGroupsView(pid, f) {
         `<form id="cgf">
           <div class="mb-3"><label class="form-label" for="cg-name">Name</label><input class="form-control" id="cg-name" name="name" required maxlength="60" placeholder="Blog"></div>
           <div class="mb-3"><label class="form-label" for="cg-inc">Include, one pattern per line</label><textarea class="form-control font-monospace" id="cg-inc" name="include" rows="3" required placeholder="/blog/"></textarea>
-            <div class="form-hint"><code>/blog/</code> starts with · <code>/docs/*/api</code> wildcard · <code>pricing</code> anywhere in the path</div></div>
+            <ul class="form-hint pattern-hints"><li><code>/blog/</code> matches paths that start with it</li><li><code>/docs/*/api</code> uses <code>*</code> as a wildcard</li><li><code>pricing</code> matches it anywhere in the path</li></ul></div>
           <div class="mb-3"><label class="form-label" for="cg-exc">Exclude (optional)</label><textarea class="form-control font-monospace" id="cg-exc" name="exclude" rows="2" placeholder="/blog/tag/"></textarea></div>
           <div class="btn-list"><button class="btn" type="button" id="cg-preview">${I.search} Preview</button><button class="btn btn-primary" type="submit">Save group</button></div>
           <div id="cgmsg" class="mt-3"></div>
@@ -1217,7 +1237,7 @@ async function contentGroupsView(pid, f) {
   $('#cg-preview').addEventListener('click', async () => {
     try {
       const r = await api(`/p/${pid}/content-groups/preview`, {}, { method: 'POST', body: { include: lines(form.include.value), exclude: lines(form.exclude.value) } });
-      $('#cgmsg').innerHTML = alertBox('info', `<strong>${fmt(r.matching_pages)}</strong> stored pages match.${r.sample.length ? `<ul class="mb-0 mt-2">${r.sample.slice(0, 8).map((u) => `<li class="url">${esc(shortUrl(u))}</li>`).join('')}</ul>` : ''}`);
+      $('#cgmsg').innerHTML = alertBox('info', `<strong>${fmt(r.matching_pages)}</strong> stored pages match.${r.sample.length ? `<ul class="mb-0 mt-2">${r.sample.slice(0, 8).map((u) => `<li>${urlSpan(shortUrl(u))}</li>`).join('')}</ul>` : ''}`);
     } catch (err) {
       $('#cgmsg').innerHTML = alertBox('danger', esc(err.message));
     }
@@ -1271,7 +1291,7 @@ function chartAnnotations(notes, rows, compact) {
     const x2 = n.end_date ? Math.min(Date.parse(n.end_date), last) : null;
     const google = n.category === 'google';
     const color = google ? s2 : accent;
-    const text = compact ? String(i + 1) : n.title.length > 22 ? n.title.slice(0, 21) + '…' : n.title;
+    const text = compact ? String(i + 1) : n.title.length > 32 ? n.title.slice(0, 31) + '…' : n.title;
     return {
       x,
       ...(x2 && x2 > x ? { x2, fillColor: color, opacity: 0.08 } : {}),
@@ -1361,7 +1381,7 @@ async function alertsView(tab) {
   state.openAlerts = list.open_count;
   renderSidebar('', 'alerts');
   const chanName = (id) => chans.channels.find((c) => c.id === id)?.name || `#${id}`;
-  const tabs = `<ul class="nav nav-tabs card-header-tabs">${[
+  const tabs = `<ul class="nav nav-tabs card-header-tabs nav-scroll">${[
     ['open', `Open${list.open_count ? ` (${list.open_count})` : ''}`],
     ['all', 'History'],
     ['rules', 'Rules'],
@@ -1374,10 +1394,10 @@ async function alertsView(tab) {
     body = table(
       [
         { key: 'severity', label: 'Severity', fmt: (v) => `<span class="badge ${SEV[v] || 'badge-soft'}">${esc(v)}</span>` },
-        { key: 'property', label: 'Property', fmt: (v) => esc(v || '–') },
-        { key: 'title', label: 'Alert', fmt: (v, r) => (r.link ? `<a href="${esc(r.link.replace(/^https?:\/\/[^/#]+/, ''))}">${esc(v)}</a>` : esc(v)) },
-        { key: 'created_at', label: 'When', fmt: (v) => esc(String(v).slice(0, 16).replace('T', ' ')) },
-        { key: 'status', label: 'Status', fmt: (v, r) => (v === 'open' ? `<button class="btn btn-sm" data-ack="${r.id}">${I.check} Acknowledge</button>` : `<span class="text-secondary">${esc(v)}</span>`) },
+        { key: 'property', label: 'Property', cls: 'd-none d-md-table-cell', fmt: (v) => esc(v || '–') },
+        { key: 'title', label: 'Alert', cls: 'alert-cell', fmt: (v, r) => { const t = r.property && String(v).startsWith(r.property + ': ') ? String(v).slice(r.property.length + 2) : v; return r.link ? `<a href="${esc(r.link.replace(/^https?:\/\/[^/#]+/, ''))}">${breakable(t)}</a>` : breakable(t); } },
+        { key: 'created_at', label: 'When (UTC)', cls: 'text-nowrap', fmt: (v) => esc(String(v).slice(0, 16).replace('T', ' ')) },
+        { key: 'status', label: tab === 'open' ? '<span class="visually-hidden">Actions</span>' : 'Status', num: true, fmt: (v, r) => (v === 'open' ? `<button class="btn btn-sm" data-ack="${r.id}">${I.check} Acknowledge</button>` : `<span class="text-secondary">${esc(v)}</span>`) },
       ],
       list.alerts,
       null,

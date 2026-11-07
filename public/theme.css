@@ -107,8 +107,26 @@ small, .small, .subheader, .form-hint, .datagrid-title, .badge, .table thead th,
 .badge-note { background: var(--tblr-primary-lt); color: var(--gt-accent-ink); }
 .progress-bar { background-color: var(--gt-accent); }
 
-.url { word-break: break-all; }
-.cell-label { min-width: 180px; max-width: 520px; }
+.url { overflow-wrap: break-word; word-break: normal; }
+.cell-label { min-width: 11rem; max-width: 520px; }
+.alert-cell { min-width: 16rem; }
+
+/* Tables: tighter side padding so half-width cards fit four or five columns. */
+.card-table > :not(caption) > * > * { padding-left: 0.75rem; padding-right: 0.75rem; }
+.card-table > :not(caption) > * > *:first-child { padding-left: 1.25rem; }
+.card-table > :not(caption) > * > *:last-child { padding-right: 1.25rem; }
+.table-sort { white-space: nowrap; }
+
+/* Cards that sit side by side match heights. */
+.row-cards > [class*="col"] > .card:only-child { height: 100%; }
+
+/* Tab rows scroll sideways instead of wrapping onto a ragged second line. */
+.nav-scroll { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.nav-scroll .nav-link { white-space: nowrap; }
+
+.pattern-hints { padding-left: 1.1rem; margin: 0.5rem 0 0; }
+.pattern-hints li + li { margin-top: 0.25rem; }
+.pattern-hints code { white-space: nowrap; }
 .num { font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
 .kpi-value { font-size: 1.75rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .chart-box { min-height: 300px; }
