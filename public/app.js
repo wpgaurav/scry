@@ -291,7 +291,9 @@ function table(cols, rows, sortState, emptyText) {
       const inner =
         c.sort && sortState
           ? `<button type="button" class="table-sort ${active ? (sortState.order === 'asc' ? 'asc' : 'desc') : ''}" data-sort="${c.sort}">${c.label}</button>`
-          : c.label;
+          : !sortState && c.label && c.nosort !== true && !c.label.includes('visually-hidden')
+            ? `<button type="button" class="table-sort" data-csort="${c.num && c.key !== 'position' ? 'desc' : 'asc'}">${c.label}</button>`
+            : c.label;
       return `<th class="${c.num ? 'text-end' : ''}" ${active ? `aria-sort="${sortState.order === 'asc' ? 'ascending' : 'descending'}"` : ''} scope="col">${inner}</th>`;
     })
     .join('');
@@ -302,14 +304,74 @@ function table(cols, rows, sortState, emptyText) {
         cols
           .map((c) => {
             const content = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key] ?? '–');
-            return `<td class="${c.num ? 'num' : 'cell-label'}">${c.link ? `<a href="${c.link(r)}">${content}</a>` : content}</td>`;
+            const v = r[c.key];
+            const dv = !sortState && (typeof v === 'number' || typeof v === 'string') ? ` data-v="${esc(String(v))}"` : '';
+            return `<td class="${c.num ? 'num' : 'cell-label'}"${dv}>${c.link ? `<a href="${c.link(r)}">${content}</a>` : content}</td>`;
           })
           .join('') +
         '</tr>',
     )
     .join('');
-  return `<div class="table-responsive"><table class="table table-vcenter card-table table-hover"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-responsive"><table class="table table-vcenter card-table table-hover${sortState ? '' : ' table-csort'}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+
+const TEXT_SIZE_DEFAULT = 14;
+function textSize() {
+  let v = null;
+  try {
+    v = Number(localStorage.getItem('textSize'));
+  } catch {}
+  return v >= 12 && v <= 18 ? v : TEXT_SIZE_DEFAULT;
+}
+function setTextSize(px) {
+  try {
+    if (px === TEXT_SIZE_DEFAULT) localStorage.removeItem('textSize');
+    else localStorage.setItem('textSize', String(px));
+  } catch {}
+  if (px === TEXT_SIZE_DEFAULT) document.documentElement.style.removeProperty('--scry-fs');
+  else document.documentElement.style.setProperty('--scry-fs', px + 'px');
+  window.dispatchEvent(new Event('resize')); // let charts re-measure
+}
+
+/** Client-side sort for tables that hold all their rows (anything without server sorting). */
+function sortTableBy(btn) {
+  const th = btn.closest('th');
+  const tbl = btn.closest('table');
+  const tbody = tbl?.tBodies[0];
+  if (!th || !tbody) return;
+  const idx = [...th.parentNode.children].indexOf(th);
+  const cur = btn.classList.contains('asc') ? 'asc' : btn.classList.contains('desc') ? 'desc' : null;
+  const order = cur ? (cur === 'asc' ? 'desc' : 'asc') : btn.dataset.csort;
+  const key = (tr) => {
+    const td = tr.children[idx];
+    if (!td) return null;
+    const raw = td.dataset.v ?? td.textContent.trim();
+    if (raw === '' || raw === '–') return null;
+    const n = Number(String(raw).replace(/[,%+\s]/g, '').replace(/^−/, '-'));
+    return Number.isFinite(n) && /\d/.test(raw) ? n : String(raw).toLowerCase();
+  };
+  const rows = [...tbody.rows].map((tr, i) => ({ tr, i, k: key(tr) }));
+  const dir = order === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    if (a.k === null && b.k === null) return a.i - b.i;
+    if (a.k === null) return 1; // blanks always last
+    if (b.k === null) return -1;
+    const c = typeof a.k === 'number' && typeof b.k === 'number' ? a.k - b.k : collator.compare(String(a.k), String(b.k));
+    return c * dir || a.i - b.i;
+  });
+  tbody.append(...rows.map((r) => r.tr));
+  th.parentNode.querySelectorAll('th').forEach((h) => {
+    h.removeAttribute('aria-sort');
+    h.querySelector('.table-sort')?.classList.remove('asc', 'desc');
+  });
+  btn.classList.add(order);
+  th.setAttribute('aria-sort', order === 'asc' ? 'ascending' : 'descending');
+}
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.table-csort [data-csort]');
+  if (b) sortTableBy(b);
+});
 
 const metricCols = (hasPrev, keep) =>
   [
@@ -731,6 +793,22 @@ async function settingsView() {
       ${has ? `<button class="btn btn-sm mt-2" type="button" data-remove-asset="${key}">${I.trash} Remove</button>` : ''}
     </div>`;
   };
+  const sizes = [
+    [13, 'Small'],
+    [14, 'Default'],
+    [15, 'Medium'],
+    [16, 'Large'],
+    [17, 'Extra large'],
+  ];
+  const curSize = textSize();
+  const displayCard = card(
+    'Display',
+    `<div class="form-label" id="ts-label">Text size</div>
+    <div class="btn-group flex-wrap" role="radiogroup" aria-labelledby="ts-label">
+      ${sizes.map(([px, name]) => `<input type="radio" class="btn-check" name="textsize" id="ts-${px}" value="${px}" ${px === curSize ? 'checked' : ''}><label class="btn" for="ts-${px}">${name} <span class="text-secondary ms-1">${px}px</span></label>`).join('')}
+    </div>
+    <div class="form-hint mt-2">Saved in this browser, so your phone and laptop can differ.</div>`,
+  );
   const brandingCard = card(
     'Branding',
     `<form id="bf">
@@ -837,9 +915,9 @@ async function settingsView() {
             ['No keys yet', 'Create one to connect Claude, ChatGPT, Codex or a script.'],
           ) +
           `<div class="card-footer"><form class="row g-2 align-items-end" id="keyf">
-            <div class="col-sm"><label class="form-label" for="k-name">Name</label><input class="form-control" id="k-name" name="name" required placeholder="Claude Code"></div>
-            <div class="col-sm-auto"><label class="form-label" for="k-scope">Scope</label><select class="form-select" id="k-scope" name="scope"><option value="read">Read</option><option value="write">Read and write</option></select></div>
-            <div class="col-sm-auto"><button class="btn btn-primary" type="submit">${I.key} Create key</button></div>
+            <div class="col-12"><label class="form-label" for="k-name">Name</label><input class="form-control" id="k-name" name="name" required placeholder="Claude Code"></div>
+            <div class="col"><label class="form-label" for="k-scope">Scope</label><select class="form-select" id="k-scope" name="scope"><option value="read">Read</option><option value="write">Read and write</option></select></div>
+            <div class="col-auto"><button class="btn btn-primary" type="submit">${I.key} Create key</button></div>
           </form><div id="newkey" class="mt-3"></div></div>`,
         { flush: true },
       )}</div>
@@ -862,6 +940,8 @@ async function settingsView() {
           <div class="tab-pane" id="ai-codex" role="tabpanel">${codeBlock('c-codex', `[mcp_servers.scry]\nurl = "${origin}/mcp"\nbearer_token_env_var = "SCRY_API_KEY"`)}</div>
         </div>`,
       )}</div>
+
+      <div class="col-12">${displayCard}</div>
 
       <div class="col-12">${brandingCard}</div>
 
@@ -891,6 +971,7 @@ async function settingsView() {
     </div>`,
   );
 
+  view.querySelectorAll('input[name="textsize"]').forEach((r) => r.addEventListener('change', () => setTextSize(Number(r.value))));
   const bmsg = (kind, text) => ($('#bmsg').innerHTML = alertBox(kind, text));
   $('#b-accent-pick')?.addEventListener('input', (e) => ($('#b-accent').value = e.target.value));
   $('#b-accent')?.addEventListener('input', (e) => {

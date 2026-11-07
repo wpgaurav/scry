@@ -66,6 +66,8 @@
   --tblr-secondary-color: var(--gt-muted);
 }
 
+/* Text size: body text equals --scry-fs (default 14px, set per device in Settings). Everything in rem scales with it. */
+:root { font-size: calc(var(--scry-fs, 14px) * 16 / 15); }
 body { font-size: var(--tblr-body-font-size); }
 
 /* Text floor: nothing under 0.9rem, and muted text stays at 7:1. */

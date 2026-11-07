@@ -13,6 +13,9 @@
       try { t = localStorage.getItem('theme'); } catch (e) {}
       if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       document.documentElement.setAttribute('data-bs-theme', t);
+      var fs = null;
+      try { fs = localStorage.getItem('textSize'); } catch (e) {}
+      if (fs && /^1[2-8]$/.test(fs)) document.documentElement.style.setProperty('--scry-fs', fs + 'px');
     })();
   </script>
   <link rel="stylesheet" href="/vendor/tabler.min.css">
