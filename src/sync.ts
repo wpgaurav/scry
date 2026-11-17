@@ -7,10 +7,47 @@ import { addDays, dateRange, pageId, queryId, sqlNum, sqlStr, todayUtc } from '.
 export const HISTORY_DAYS = 485;
 /** Final data usually lands 2-3 days after the day ends. */
 export const FINAL_LAG_DAYS = 3;
+/** Days older than this many days are backfill: they can wait when the write budget is spent. */
+const RECENT_DAYS = FINAL_LAG_DAYS + 7;
 const MAX_ENQUEUE_PER_TYPE = 500;
 const STALE_MS = 6 * 3600_000;
 
 const NO_QUERY_TYPES: SearchType[] = ['discover', 'googleNews'];
+
+const int = (v: string | undefined, fallback: number) => {
+  const n = Number.parseInt(String(v ?? '').trim(), 10);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/** Sync settings from Worker vars, with defaults that stay inside the Workers Paid D1 allowance. */
+export function syncConfig(env: Env) {
+  return {
+    historyDays: Math.min(HISTORY_DAYS, Math.max(7, int(env.HISTORY_DAYS, HISTORY_DAYS))),
+    provisionalRefreshHours: Math.min(168, Math.max(1, int(env.PROVISIONAL_REFRESH_HOURS, 24))),
+    dailyWriteBudget: Math.max(0, int(env.DAILY_WRITE_BUDGET, 1_500_000)),
+  };
+}
+
+export async function writesOn(env: Env, date = todayUtc()): Promise<number> {
+  const row = await env.DB.prepare('SELECT rows_written FROM usage_daily WHERE date = ?').bind(date).first<{ rows_written: number }>();
+  return row?.rows_written ?? 0;
+}
+
+async function recordWrites(env: Env, rows: number) {
+  if (rows <= 0) return;
+  await env.DB.prepare(
+    'INSERT INTO usage_daily (date, rows_written) VALUES (?, ?) ON CONFLICT (date) DO UPDATE SET rows_written = rows_written + excluded.rows_written',
+  )
+    .bind(todayUtc(), rows)
+    .run();
+}
+
+async function overBudget(env: Env) {
+  const { dailyWriteBudget } = syncConfig(env);
+  return dailyWriteBudget > 0 && (await writesOn(env)) >= dailyWriteBudget;
+}
+
+const isBackfill = (date: string) => date < addDays(todayUtc(), -RECENT_DAYS);
 
 interface JobRow {
   date: string;
@@ -21,10 +58,12 @@ interface JobRow {
 
 /** Enqueue every missing or stale day for a property. Covers backfill, gaps and provisional refresh. */
 export async function planSync(env: Env, p: Property): Promise<number> {
+  const cfg = syncConfig(env);
   const today = todayUtc();
   const lastFinal = addDays(today, -FINAL_LAG_DAYS);
-  const first = addDays(today, -HISTORY_DAYS);
+  const first = addDays(today, -cfg.historyDays);
   const now = Date.now();
+  const paused = await overBudget(env);
   let total = 0;
 
   for (const type of propertySearchTypes(p)) {
@@ -44,12 +83,14 @@ export async function planSync(env: Env, p: Property): Promise<number> {
     // Newest first so recent data shows up before the deep backfill.
     for (const date of dateRange(first, lastFinal).reverse()) {
       if (jobs.length >= MAX_ENQUEUE_PER_TYPE) break;
+      // Out of write budget for today: keep recent days fresh, leave the backfill for tomorrow.
+      if (paused && isBackfill(date)) break;
       if (due(final.get(date), -1)) jobs.push({ kind: 'sync', propertyId: p.id, date, searchType: type, dataState: 'final' });
     }
     // Provisional ("all") data for recent days that have no final data yet.
     for (const date of dateRange(addDays(today, -6), addDays(today, -1))) {
       if (final.get(date)?.status === 'ok') continue;
-      if (due(prov.get(date), 5 * 3600_000)) jobs.push({ kind: 'sync', propertyId: p.id, date, searchType: type, dataState: 'all' });
+      if (due(prov.get(date), cfg.provisionalRefreshHours * 3600_000)) jobs.push({ kind: 'sync', propertyId: p.id, date, searchType: type, dataState: 'all' });
     }
     if (!jobs.length) continue;
 
@@ -58,7 +99,7 @@ export async function planSync(env: Env, p: Property): Promise<number> {
       'INSERT INTO sync_jobs (property_id, date, search_type, data_state, status, rows, error, updated_at) VALUES ',
       jobs.map((j) => j.kind === 'sync' ? tuple(sqlNum(p.id), sqlStr(j.date), sqlStr(type), sqlStr(j.dataState), "'queued'", '0', 'NULL', sqlStr(stamp)) : ''),
     ).map((s) => s + ' ON CONFLICT (property_id, search_type, data_state, date) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at, error = NULL');
-    await execMany(env, sqls);
+    await recordWrites(env, await execMany(env, sqls));
     for (let i = 0; i < jobs.length; i += 100) {
       await env.JOBS.sendBatch(jobs.slice(i, i + 100).map((body) => ({ body })));
     }
@@ -85,7 +126,66 @@ async function setJob(env: Env, j: Extract<Job, { kind: 'sync' }>, status: strin
 
 const pos = (r: SearchAnalyticsRow) => r.position * r.impressions;
 
-/** Fetch one day for one search type and replace its rows. */
+type Key = (string | number)[];
+interface FactRow {
+  key: Key;
+  vals: number[];
+}
+interface FactTable {
+  name: string;
+  keys: string[];
+  vals: string[];
+  rows: FactRow[];
+}
+
+const literal = (v: string | number) => (typeof v === 'number' ? sqlNum(v) : sqlStr(v));
+
+/**
+ * Diffs one day of fetched rows against what D1 already holds and returns SQL that writes
+ * only the difference: new or changed rows are upserted, rows Google no longer returns are
+ * deleted, unchanged rows are left alone. D1 bills every written row and index entry, so a
+ * re-fetched day that barely moved costs a handful of writes instead of a full rewrite.
+ */
+async function diffDay(env: Env, t: FactTable, P: string, T: string, D: string, pid: number, type: string, date: string) {
+  const cols = [...t.keys, ...t.vals];
+  const existing = await env.DB.prepare(`SELECT ${cols.join(', ')} FROM ${t.name} WHERE property_id = ? AND search_type = ? AND date = ?`)
+    .bind(pid, type, date)
+    .raw<(string | number)[]>();
+  const old = new Map<string, string>();
+  for (const r of existing) old.set(JSON.stringify(r.slice(0, t.keys.length)), r.slice(t.keys.length).join('|'));
+
+  const changed: FactRow[] = [];
+  for (const row of t.rows) {
+    const k = JSON.stringify(row.key);
+    const prev = old.get(k);
+    old.delete(k);
+    if (prev !== row.vals.join('|')) changed.push(row);
+  }
+  const gone = [...old.keys()].map((k) => JSON.parse(k) as Key);
+
+  const where = `property_id = ${P} AND search_type = ${T} AND date = ${D}`;
+  const sqls: string[] = [];
+  if (gone.length) {
+    if (!t.keys.length) sqls.push(`DELETE FROM ${t.name} WHERE ${where}`);
+    else
+      sqls.push(
+        ...buildInserts(`DELETE FROM ${t.name} WHERE ${where} AND (${t.keys.join(', ')}) IN (VALUES `, gone.map((k) => tuple(...k.map(literal)))).map((s) => s + ')'),
+      );
+  }
+  if (changed.length) {
+    const pk = ['property_id', 'search_type', 'date', ...t.keys].join(', ');
+    const set = t.vals.map((v) => `${v} = excluded.${v}`).join(', ');
+    sqls.push(
+      ...buildInserts(
+        `INSERT INTO ${t.name} (property_id, search_type, date, ${cols.join(', ')}) VALUES `,
+        changed.map((r) => tuple(P, T, D, ...r.key.map(literal), ...r.vals.map(sqlNum))),
+      ).map((s) => s + ` ON CONFLICT (${pk}) DO UPDATE SET ${set}`),
+    );
+  }
+  return { sqls, changed };
+}
+
+/** Fetch one day for one search type and bring its stored rows in line, writing only what changed. */
 export async function runSyncJob(env: Env, j: Extract<Job, { kind: 'sync' }>) {
   const p = await env.DB.prepare('SELECT * FROM properties WHERE id = ?').bind(j.propertyId).first<Property>();
   if (!p || !p.active) return;
@@ -97,6 +197,10 @@ export async function runSyncJob(env: Env, j: Extract<Job, { kind: 'sync' }>) {
       .bind(p.id, j.searchType, j.date)
       .first<{ status: string }>();
     if (fin?.status === 'ok') return setJob(env, j, 'skipped', 0, null);
+  }
+
+  if (isBackfill(j.date) && (await overBudget(env))) {
+    return setJob(env, j, 'deferred', 0, 'Daily write budget reached. The backfill resumes after 00:00 UTC.');
   }
 
   const q = (dimensions: Dimension[]) =>
@@ -143,49 +247,55 @@ export async function runSyncJob(env: Env, j: Extract<Job, { kind: 'sync' }>) {
     return id;
   };
 
-  const fact = (r: SearchAnalyticsRow, ...ids: number[]) =>
-    tuple(P, T, D, ...ids.map(sqlNum), sqlNum(Math.round(r.clicks)), sqlNum(Math.round(r.impressions)), sqlNum(pos(r)));
+  const vals = (r: SearchAnalyticsRow) => [Math.round(r.clicks), Math.round(r.impressions), pos(r)];
+  const facts = ['clicks', 'impressions', 'pos_sum'];
+  const tables: FactTable[] = [
+    {
+      name: 'daily_totals',
+      keys: [],
+      vals: [...facts, 'provisional'],
+      rows: [{ key: [], vals: [...(t ? vals(t) : [0, 0, 0]), j.dataState === 'final' ? 0 : 1] }],
+    },
+    { name: 'page_daily', keys: ['page_id'], vals: facts, rows: pages.map((r) => ({ key: [pid_(r.keys![0])], vals: vals(r) })) },
+    { name: 'query_daily', keys: ['query_id'], vals: facts, rows: queries.map((r) => ({ key: [qid_(r.keys![0])], vals: vals(r) })) },
+    {
+      name: 'query_page_daily',
+      keys: ['query_id', 'page_id'],
+      vals: facts,
+      rows: pairs.map((r) => ({ key: [qid_(r.keys![0]), pid_(r.keys![1])], vals: vals(r) })),
+    },
+    {
+      name: 'dim_daily',
+      keys: ['dim', 'value'],
+      vals: facts,
+      rows: [
+        ...countries.map((r) => ({ key: ['country', r.keys![0]], vals: vals(r) })),
+        ...devices.map((r) => ({ key: ['device', r.keys![0]], vals: vals(r) })),
+        ...appearances.map((r) => ({ key: ['searchAppearance', r.keys![0]], vals: vals(r) })),
+      ],
+    },
+  ];
 
-  const pageRows = pages.map((r) => fact(r, pid_(r.keys![0])));
-  const queryRows = queries.map((r) => fact(r, qid_(r.keys![0])));
-  const pairRows = pairs.map((r) => fact(r, qid_(r.keys![0]), pid_(r.keys![1])));
-  const dimRows = [
-    ...countries.map((r) => ['country', r]),
-    ...devices.map((r) => ['device', r]),
-    ...appearances.map((r) => ['searchAppearance', r]),
-  ].map(([dim, r]) => {
-    const row = r as SearchAnalyticsRow;
-    return tuple(P, T, D, sqlStr(dim as string), sqlStr(row.keys![0]), sqlNum(Math.round(row.clicks)), sqlNum(Math.round(row.impressions)), sqlNum(pos(row)));
-  });
+  const writes: string[] = [];
+  const newPages = new Set<number>();
+  const newQueries = new Set<number>();
+  for (const table of tables) {
+    const { sqls, changed } = await diffDay(env, table, P, T, D, pid, j.searchType, j.date);
+    writes.push(...sqls);
+    // Only rows being written can introduce a page or query id that isn't stored yet.
+    for (const r of changed) {
+      if (table.keys.includes('page_id')) newPages.add(r.key[table.keys.indexOf('page_id')] as number);
+      if (table.keys.includes('query_id')) newQueries.add(r.key[table.keys.indexOf('query_id')] as number);
+    }
+  }
 
-  const sqls: string[] = [];
-  sqls.push(
-    ...buildInserts('INSERT OR IGNORE INTO pages (id, property_id, url) VALUES ', [...pageTexts].map(([id, url]) => tuple(sqlNum(id), P, sqlStr(url)))),
-    ...buildInserts('INSERT OR IGNORE INTO queries (id, property_id, text) VALUES ', [...queryTexts].map(([id, text]) => tuple(sqlNum(id), P, sqlStr(text)))),
-  );
-  const where = `WHERE property_id = ${P} AND search_type = ${T} AND date = ${D}`;
-  sqls.push(
-    `DELETE FROM daily_totals ${where}`,
-    `DELETE FROM page_daily ${where}`,
-    `DELETE FROM query_daily ${where}`,
-    `DELETE FROM query_page_daily ${where}`,
-    `DELETE FROM dim_daily ${where}`,
-    `INSERT INTO daily_totals (property_id, search_type, date, clicks, impressions, pos_sum, provisional) VALUES ${tuple(
-      P,
-      T,
-      D,
-      sqlNum(Math.round(t?.clicks ?? 0)),
-      sqlNum(Math.round(t?.impressions ?? 0)),
-      sqlNum(t ? pos(t) : 0),
-      j.dataState === 'final' ? '0' : '1',
-    )}`,
-    ...buildInserts('INSERT INTO page_daily (property_id, search_type, date, page_id, clicks, impressions, pos_sum) VALUES ', pageRows),
-    ...buildInserts('INSERT INTO query_daily (property_id, search_type, date, query_id, clicks, impressions, pos_sum) VALUES ', queryRows),
-    ...buildInserts('INSERT INTO query_page_daily (property_id, search_type, date, query_id, page_id, clicks, impressions, pos_sum) VALUES ', pairRows),
-    ...buildInserts('INSERT INTO dim_daily (property_id, search_type, date, dim, value, clicks, impressions, pos_sum) VALUES ', dimRows),
-  );
-  await execMany(env, sqls, 4, 300);
-  await setJob(env, j, 'ok', pageRows.length + queryRows.length + pairRows.length, null);
+  const sqls = [
+    ...buildInserts('INSERT OR IGNORE INTO pages (id, property_id, url) VALUES ', [...newPages].map((id) => tuple(sqlNum(id), P, sqlStr(pageTexts.get(id)!)))),
+    ...buildInserts('INSERT OR IGNORE INTO queries (id, property_id, text) VALUES ', [...newQueries].map((id) => tuple(sqlNum(id), P, sqlStr(queryTexts.get(id)!)))),
+    ...writes,
+  ];
+  if (sqls.length) await recordWrites(env, await execMany(env, sqls, 4, 300));
+  await setJob(env, j, 'ok', tables[1].rows.length + tables[2].rows.length + tables[3].rows.length, null);
 }
 
 export async function syncStatus(env: Env, propertyId?: number) {
@@ -200,7 +310,21 @@ export async function syncStatus(env: Env, propertyId?: number) {
   )
     .bind(...(propertyId ? [propertyId] : []))
     .all();
-  return { summary: results, recent_errors: errors.results };
+  const cfg = syncConfig(env);
+  const month = await env.DB.prepare('SELECT COALESCE(SUM(rows_written), 0) AS n FROM usage_daily WHERE date > ?')
+    .bind(addDays(todayUtc(), -30))
+    .first<{ n: number }>();
+  return {
+    summary: results,
+    recent_errors: errors.results,
+    writes: {
+      today: await writesOn(env),
+      last_30_days: month?.n ?? 0,
+      daily_budget: cfg.dailyWriteBudget || null,
+      history_days: cfg.historyDays,
+      provisional_refresh_hours: cfg.provisionalRefreshHours,
+    },
+  };
 }
 
 export type { DataState };

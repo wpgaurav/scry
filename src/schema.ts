@@ -61,5 +61,11 @@ export const MIGRATIONS: { name: string; statements: string[] }[] = [
       "DROP INDEX IF EXISTS page_daily_page",
       "DROP INDEX IF EXISTS query_daily_query"
     ]
+  },
+  {
+    "name": "0006_write_usage.sql",
+    "statements": [
+      "CREATE TABLE usage_daily (\n  date TEXT PRIMARY KEY,\n  rows_written INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID"
+    ]
   }
 ];

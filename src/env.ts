@@ -22,6 +22,13 @@ export interface Env {
   SA_ENCRYPTION_KEY?: string;
   ADMIN_PASSWORD?: string;
 
+  /** Days of history to keep in sync, up to 485 (Search Console's 16 months). */
+  HISTORY_DAYS?: string;
+  /** How often provisional (not yet final) days are re-fetched, in hours. */
+  PROVISIONAL_REFRESH_HOURS?: string;
+  /** D1 rows the sync may write per UTC day before the backfill pauses. 0 = no limit. */
+  DAILY_WRITE_BUDGET?: string;
+
   EMAIL_API_URL?: string;
   EMAIL_API_KEY?: string;
   DIGEST_TO?: string;

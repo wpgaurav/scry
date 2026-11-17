@@ -983,6 +983,13 @@ async function settingsView() {
           (sync.recent_errors.length
             ? `<div class="card-body border-top"><h3 class="card-title">Recent errors</h3></div>${table([{ key: 'property_id', label: 'Property', fmt: (v) => esc(propLabel(v)) }, { key: 'date', label: 'Day' }, { key: 'error', label: 'Error' }], sync.recent_errors)}`
             : '') +
+          (sync.writes
+            ? `<div class="card-body border-top text-secondary">D1 rows written by sync today: <strong>${fmt(sync.writes.today)}</strong>${
+                sync.writes.daily_budget ? ` of ${fmt(sync.writes.daily_budget)} a day` : ''
+              } · last 30 days: <strong>${fmt(sync.writes.last_30_days)}</strong>${
+                sync.writes.daily_budget && sync.writes.today >= sync.writes.daily_budget ? ' · <span class="badge badge-soft">Backfill paused until 00:00 UTC</span>' : ''
+              }</div>`
+            : '') +
           `<div class="card-footer"><div class="btn-list"><button class="btn" id="syncnow">${I.refresh} Sync now</button>
             <a class="btn" href="/api/digest/preview" target="_blank" rel="noopener">${I['external-link']} Preview weekly digest</a>
             <button class="btn" id="digest">Send digest now</button></div><div id="syncmsg" class="mt-2"></div></div>`,

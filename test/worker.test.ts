@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { exports } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildInserts } from '../src/db';
-import { runSyncJob } from '../src/sync';
+import { planSync, runSyncJob } from '../src/sync';
 import { hashId, sqlStr } from '../src/util';
 import { makeKey, PAGE_A, PAGE_B, PID, seed } from './helpers';
 
@@ -183,39 +183,108 @@ describe('sync', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it('fetches one day and replaces its rows', async () => {
+  const row = (keys: string[], c: number, i: number, p: number) => ({ keys, clicks: c, impressions: i, ctr: c / i, position: p });
+  const PAGE = "https://example.com/it's/";
+  const DAY: Record<string, unknown[]> = {
+    date: [row(['2026-02-01'], 30, 300, 4)],
+    page: [row([PAGE], 20, 200, 3), row(['https://example.com/gone/'], 5, 50, 9)],
+    query: [row(['new query'], 20, 200, 3)],
+    'query,page': [row(['new query', PAGE], 20, 200, 3)],
+    country: [row(['usa'], 30, 300, 4)],
+    device: [row(['MOBILE'], 30, 300, 4)],
+    searchAppearance: [],
+  };
+
+  /** Mocks Google: answers each dimension set from `rows`, records request bodies. */
+  function google(rows: Record<string, unknown[]>) {
     const bodies: any[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       if (url.includes('oauth2')) return Response.json({ access_token: 'tok', expires_in: 3600 });
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
-      const dims: string[] = body.dimensions;
-      const row = (keys: string[], c: number, i: number, p: number) => ({ keys, clicks: c, impressions: i, ctr: c / i, position: p });
-      const rows: Record<string, unknown[]> = {
-        date: [row(['2026-02-01'], 30, 300, 4)],
-        page: [row(["https://example.com/it's/"], 20, 200, 3)],
-        query: [row(['new query'], 20, 200, 3)],
-        'query,page': [row(['new query', "https://example.com/it's/"], 20, 200, 3)],
-        country: [row(['usa'], 30, 300, 4)],
-        device: [row(['MOBILE'], 30, 300, 4)],
-        searchAppearance: [],
-      };
-      return Response.json({ rows: rows[dims.join(',')] ?? [] });
+      return Response.json({ rows: rows[(body.dimensions as string[]).join(',')] ?? [] });
     });
-    const job = { kind: 'sync' as const, propertyId: PID, date: '2026-02-01', searchType: 'web' as const, dataState: 'final' as const };
-    await runSyncJob({ ...env, GSC_SA_KEY: saKey } as any, job);
-    await runSyncJob({ ...env, GSC_SA_KEY: saKey } as any, job); // idempotent re-run
+    return bodies;
+  }
+
+  const job = (date = '2026-02-01') => ({ kind: 'sync' as const, propertyId: PID, date, searchType: 'web' as const, dataState: 'final' as const });
+  const run = (j: ReturnType<typeof job>, vars: Record<string, string> = {}) => runSyncJob({ ...env, GSC_SA_KEY: saKey, ...vars } as any, j);
+  const written = async () => (await env.DB.prepare('SELECT COALESCE(SUM(rows_written), 0) AS n FROM usage_daily').first<any>()).n as number;
+
+  beforeEach(async () => {
+    await env.DB.batch([env.DB.prepare('DELETE FROM usage_daily'), env.DB.prepare('DELETE FROM sync_jobs')]);
+  });
+
+  it('fetches one day and stores its rows', async () => {
+    const bodies = google(DAY);
+    await run(job());
 
     const t = await env.DB.prepare("SELECT clicks, impressions, pos_sum FROM daily_totals WHERE date = '2026-02-01'").first<any>();
     expect(t).toEqual({ clicks: 30, impressions: 300, pos_sum: 1200 });
     const pages = await env.DB.prepare("SELECT COUNT(*) AS n FROM page_daily WHERE date = '2026-02-01'").first<any>();
-    expect(pages.n).toBe(1);
+    expect(pages.n).toBe(2);
     const url = await env.DB.prepare("SELECT url FROM pages WHERE url LIKE '%it''s%'").first<any>();
-    expect(url.url).toBe("https://example.com/it's/");
+    expect(url.url).toBe(PAGE);
     const status = await env.DB.prepare("SELECT status FROM sync_jobs WHERE date = '2026-02-01'").first<any>();
     expect(status.status).toBe('ok');
     expect(bodies.every((b) => b.dataState === 'final' && b.startDate === '2026-02-01')).toBe(true);
+    expect(await written()).toBeGreaterThan(0);
+  });
+
+  it('writes nothing when a re-fetched day is unchanged', async () => {
+    google(DAY);
+    await run(job());
+    const first = await written();
+    await run(job());
+    expect(await written()).toBe(first);
+  });
+
+  it('writes only the difference when a day changes', async () => {
+    google(DAY);
+    await run(job());
+    const first = await written();
+    vi.restoreAllMocks();
+    // One page moved, one page dropped out; everything else is identical.
+    google({ ...DAY, page: [row([PAGE], 25, 210, 3)] });
+    await run(job());
+
+    const pages = await env.DB.prepare("SELECT clicks, impressions FROM page_daily WHERE date = '2026-02-01'").all<any>();
+    expect(pages.results).toEqual([{ clicks: 25, impressions: 210 }]);
+    const pairs = await env.DB.prepare("SELECT COUNT(*) AS n FROM query_page_daily WHERE date = '2026-02-01'").first<any>();
+    expect(pairs.n).toBe(1);
+    const second = (await written()) - first;
+    expect(second).toBeGreaterThan(0);
+    expect(second).toBeLessThan(first);
+  });
+
+  it('defers backfill days once the daily write budget is spent', async () => {
+    const bodies = google(DAY);
+    await env.DB.prepare('INSERT INTO usage_daily (date, rows_written) VALUES (?, 100)').bind(new Date().toISOString().slice(0, 10)).run();
+    await run(job('2025-06-01'), { DAILY_WRITE_BUDGET: '100' });
+    const s = await env.DB.prepare("SELECT status FROM sync_jobs WHERE date = '2025-06-01'").first<any>();
+    expect(s.status).toBe('deferred');
+    expect(bodies.length).toBe(0);
+
+    // A recent day still syncs, so the dashboard stays current.
+    const recent = new Date(Date.now() - 4 * 86400_000).toISOString().slice(0, 10);
+    await run(job(recent), { DAILY_WRITE_BUDGET: '100' });
+    const r = await env.DB.prepare('SELECT status FROM sync_jobs WHERE date = ?').bind(recent).first<any>();
+    expect(r.status).toBe('ok');
+  });
+
+  it('plans history within HISTORY_DAYS and skips the backfill when over budget', async () => {
+    const p = await env.DB.prepare('SELECT * FROM properties WHERE id = ?').bind(PID).first<any>();
+    const finals = async () =>
+      (await env.DB.prepare("SELECT COUNT(*) AS n FROM sync_jobs WHERE data_state = 'final'").first<any>()).n as number;
+
+    await planSync({ ...env, HISTORY_DAYS: '20' } as any, p);
+    expect(await finals()).toBe(18); // today-20 through today-3
+
+    await env.DB.prepare('DELETE FROM sync_jobs').run();
+    await env.DB.prepare('INSERT OR REPLACE INTO usage_daily (date, rows_written) VALUES (?, 5)').bind(new Date().toISOString().slice(0, 10)).run();
+    await planSync({ ...env, HISTORY_DAYS: '20', DAILY_WRITE_BUDGET: '5' } as any, p);
+    expect(await finals()).toBe(8); // only today-10 through today-3
   });
 });
 

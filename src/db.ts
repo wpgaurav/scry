@@ -75,12 +75,15 @@ export function buildInserts(prefix: string, tuples: string[]): string[] {
   return out;
 }
 
-/** Runs raw SQL statements in D1 batches (atomic per batch). */
-export async function execMany(env: Env, sqls: string[], perBatch = 8, pauseMs = 0) {
+/** Runs raw SQL statements in D1 batches (atomic per batch). Returns the rows D1 reports as written. */
+export async function execMany(env: Env, sqls: string[], perBatch = 8, pauseMs = 0): Promise<number> {
+  let written = 0;
   for (let i = 0; i < sqls.length; i += perBatch) {
     if (i && pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
-    await withD1Retry(() => env.DB.batch(sqls.slice(i, i + perBatch).map((s) => env.DB.prepare(s))), 6);
+    const results = await withD1Retry(() => env.DB.batch(sqls.slice(i, i + perBatch).map((s) => env.DB.prepare(s))), 6);
+    for (const r of results) written += r.meta?.rows_written ?? 0;
   }
+  return written;
 }
 
 export function tuple(...vals: string[]) {

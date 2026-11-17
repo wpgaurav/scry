@@ -35,6 +35,15 @@
     "ACCESS_TEAM_DOMAIN": "",
     // Optional comma-separated allow list for Access sign-ins.
     "ALLOWED_EMAILS": "",
+    // D1 cost controls (see "What it costs" in the README). Empty = default.
+    // Days of history to sync, 7 to 485. Default 485 (Search Console's full 16 months).
+    "HISTORY_DAYS": "",
+    // Hours between re-fetches of provisional (not yet final) days. Default 24.
+    "PROVISIONAL_REFRESH_HOURS": "",
+    // D1 rows the sync may write per UTC day before the backfill pauses until tomorrow.
+    // Default 1500000, which keeps a month inside the 50M rows Workers Paid includes.
+    // On the Workers Free plan set 90000 (Free allows 100k writes a day). 0 = no limit.
+    "DAILY_WRITE_BUDGET": "",
     // Optional weekly digest. Any API that takes {from,to,subject,html} JSON with a Bearer key:
     // Emailit (https://api.emailit.com/v2/emails) or Resend (https://api.resend.com/emails).
     "EMAIL_API_URL": "",

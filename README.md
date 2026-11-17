@@ -233,7 +233,8 @@ Browser (password or Access) ──┐                      ▼
 AI tools (gsk_ keys) ──────────┴──► Worker ──► reports · insights · MCP · REST
 ```
 
-- Final data is fetched for every day from 16 months ago up to 3 days ago. The last few days are stored as provisional and replaced once Google finalizes them.
+- Final data is fetched for every day from 16 months ago up to 3 days ago. The last few days are stored as provisional, re-fetched once a day, and replaced once Google finalizes them.
+- Each sync compares what Google returned with what D1 already holds and writes only the rows that changed. A re-fetched day that didn't move costs almost nothing.
 - Each day stores totals plus page, query, query×page, country, device and search appearance rows. Position is stored as `position × impressions`, so averages stay correct across any date range.
 - Country and device filters, and anything the stored tables can't answer, go to Google live and are cached for 6 hours. Stored reports are cached for 15 minutes.
 - The first backfill for a large site takes a while. Expect roughly an hour per busy property. The Settings page shows progress.
@@ -244,6 +245,25 @@ AI tools (gsk_ keys) ──────────┴──► Worker ──►
 - **The API returns the top rows for each day, not every long-tail pair.** On very large sites, query×page detail stops at what Google returns. Only Search Console's BigQuery bulk export has every row.
 - **URL Inspection is limited to 2,000 checks per property per day.** Scry uses up to the daily budget you set (500 by default) and keeps headroom for manual checks.
 - **Plan.** Scry runs within Workers limits, but 16 months of data for several busy sites is most comfortable on **Workers Paid** ($5/month), which raises D1 storage and CPU time.
+
+### What it costs
+
+D1 bills two things that Scry uses heavily:
+
+- **Rows written.** Workers Paid includes 50 million a month, then $1 per million. Every index entry counts as a row, so one query×page row costs 3 writes.
+- **Storage.** Workers Paid includes 5 GB, then $0.75 per GB-month. Three busy sites with 16 months of history can reach 2 to 3 GB.
+
+The first backfill is where the writes pile up. Before these limits existed, one install wrote 50 million rows on its first day and kept writing about 2 million a day after that. Scry now holds the backfill to a daily write budget and spreads the rest over the following days. The dashboard fills newest first, so recent weeks show up right away. Settings → Sync shows how many rows the sync wrote today and over the last 30 days.
+
+Three Worker variables control the cost (`wrangler.jsonc` or Settings → Variables and Secrets):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DAILY_WRITE_BUDGET` | `1500000` | D1 rows the sync may write per UTC day. Once spent, the backfill waits until 00:00 UTC; recent days still sync. The default keeps a month inside the 50M Workers Paid includes. On Workers Free set `90000` (Free allows 100,000 writes a day). `0` turns the limit off. |
+| `HISTORY_DAYS` | `485` | Days of history to keep syncing, from 7 to 485. Fewer days means a shorter backfill and less storage. |
+| `PROVISIONAL_REFRESH_HOURS` | `24` | How often days without final data are re-fetched. |
+
+To watch real usage, open Cloudflare → Storage & Databases → D1 → your database → Metrics, or Billing → Billable Usage.
 
 ## Security
 
